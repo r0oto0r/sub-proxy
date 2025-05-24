@@ -117,6 +117,11 @@ RUN groupadd nginx && \
     mkdir -p /var/cache/nginx/scgi_temp && \
     chown -R nginx:nginx /var/cache/nginx
 
+# Create log directory and link logs to stdout/stderr for container visibility
+RUN mkdir -p /var/log/nginx && \
+    ln -sf /dev/stdout /var/log/nginx/access.log && \
+    ln -sf /dev/stderr /var/log/nginx/error.log
+
 # Copy nginx configuration and HTML files
 COPY nginx.conf /etc/nginx/nginx.conf
 RUN mkdir -p /usr/share/nginx/html
