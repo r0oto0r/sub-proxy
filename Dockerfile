@@ -132,5 +132,7 @@ RUN chmod +x /app/process_stream.sh
 # Expose ports
 EXPOSE 80 1935
 
+RUN ls -la /app/
+
 # Default command - start nginx in foreground
 CMD ["nginx", "-g", "daemon off;"]
