@@ -128,7 +128,7 @@ RUN chmod +x /app/process_stream.sh
 
 # Clean up build dependencies
 WORKDIR /
-RUN rm -rf /tmp/nginx-1.24.0* /tmp/nginx-rtmp-module
+RUN rm -rf /tmp/nginx-1.26.0* /tmp/nginx-rtmp-module
 
 # Create a working directory for the application
 WORKDIR /app
