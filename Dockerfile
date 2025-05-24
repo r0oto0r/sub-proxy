@@ -19,6 +19,8 @@ RUN apt-get update && apt-get install -y \
 	curl \
 	build-essential \
 	cmake \
+	meson \
+	ninja-build \
 	pkg-config \
 	libssl-dev \
 	zlib1g-dev \
@@ -34,7 +36,21 @@ RUN apt-get update && apt-get install -y \
 	libgstreamer-plugins-base1.0-dev \
 	libgstreamer-plugins-bad1.0-dev \
 	gstreamer1.0-plugins-bad-apps \
+	libglib2.0-dev \
+	libgtk-3-dev \
+	libcairo2-dev \
+	libpango1.0-dev \
+	libgdk-pixbuf2.0-dev \
+	libatk1.0-dev \
+	libsoup2.4-dev \
 	&& rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install cargo-c for building C libraries from Rust
+RUN cargo install cargo-c
 
 # Install Python dependencies
 RUN pipx install torch torchaudio --include-deps --index-url https://download.pytorch.org/whl/cu121
@@ -50,6 +66,18 @@ ENV WHISPER_CACHE_DIR=/app/models
 
 # Build and install nginx with RTMP module
 WORKDIR /tmp
+
+# Build transcriberbin module
+RUN git clone https://github.com/GStreamer/gst-plugins-rs.git /tmp/gst-plugins-rs
+
+# Build specific plugins we need (transcriberbin and related)
+WORKDIR /tmp/gst-plugins-rs
+RUN cargo cbuild -p gst-plugin-closedcaption --release && \
+	cargo cinstall -p gst-plugin-closedcaption --release --prefix=/usr
+
+# Set GST_PLUGIN_PATH to include our new plugins
+ENV GST_PLUGIN_PATH="/usr/lib/gstreamer-1.0"
+
 
 # Download nginx and nginx-rtmp-module
 RUN wget http://nginx.org/download/nginx-1.26.0.tar.gz && \
@@ -113,7 +141,7 @@ COPY index.html /usr/share/nginx/html/index.html
 
 # Clean up build dependencies
 WORKDIR /
-RUN rm -rf /tmp/nginx-1.26.0* /tmp/nginx-rtmp-module
+RUN rm -rf /tmp/nginx-1.26.0* /tmp/nginx-rtmp-module /tmp/gst-plugins-rs
 
 # Create a working directory for the application
 WORKDIR /app
