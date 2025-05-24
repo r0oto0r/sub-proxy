@@ -34,6 +34,8 @@ gst-launch-1.0 \
     overlay.text_sink \
     \
     video_tee. ! queue name=video_queue ! \
+    overlay.video_sink \
+    \
     textoverlay \
         name=overlay \
         font-desc="Sans Bold 24" \
