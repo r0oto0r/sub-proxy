@@ -56,6 +56,8 @@ gst-launch-1.0 \
     flvmux name=mux \
     \
     audio_tee. ! queue name=audio_passthrough_queue ! \
+    avdec_aac ! \
+    audioconvert ! \
     voaacenc bitrate=128000 ! \
     aacparse ! \
     audio/mpeg,mpegversion=4 ! \
