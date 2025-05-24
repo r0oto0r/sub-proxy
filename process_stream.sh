@@ -25,14 +25,14 @@ gst-launch-1.0 \
     audio/mpeg,mpegversion=4 ! \
     tee name=audio_tee \
     \
-    audio_tee. ! queue ! \
+    audio_tee. ! queue name=whisper_queue ! \
     audioconvert ! \
     audioresample ! \
     audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
     whisper ! \
     overlay.text_sink \
     \
-    video_tee. ! queue ! \
+    video_tee. ! queue name=video_queue ! \
     textoverlay \
         name=overlay \
         font-desc="Sans Bold 24" \
@@ -42,7 +42,7 @@ gst-launch-1.0 \
         color=0xFFFFFFFF \
         auto-resize=false \
         line-alignment=center ! \
-    queue ! \
+    queue name=encode_queue ! \
     x264enc \
         bitrate=3000 \
         speed-preset=fast \
@@ -52,7 +52,7 @@ gst-launch-1.0 \
     h264parse ! \
     flvmux name=mux \
     \
-    audio_tee. ! queue ! \
+    audio_tee. ! queue name=audio_passthrough_queue ! \
     voaacenc bitrate=128000 ! \
     aacparse ! \
     audio/mpeg,mpegversion=4 ! \
