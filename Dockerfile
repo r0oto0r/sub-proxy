@@ -113,19 +113,10 @@ RUN mkdir -p /var/cache/nginx/client_temp && \
 	mkdir -p /var/cache/nginx/uwsgi_temp && \
 	mkdir -p /var/cache/nginx/scgi_temp
 
-# Create log directory and link logs to stdout/stderr for container visibility
-RUN mkdir -p /var/log/nginx && \
-	ln -sf /dev/stdout /var/log/nginx/access.log && \
-	ln -sf /dev/stderr /var/log/nginx/error.log
-
 # Copy nginx configuration and HTML files
 COPY nginx.conf /etc/nginx/nginx.conf
 RUN mkdir -p /usr/share/nginx/html
 COPY index.html /usr/share/nginx/html/index.html
-
-# Copy and make stream processing script executable
-COPY process_stream.sh /app/process_stream.sh
-RUN chmod +x /app/process_stream.sh
 
 # Clean up build dependencies
 WORKDIR /
@@ -133,6 +124,10 @@ RUN rm -rf /tmp/nginx-1.26.0* /tmp/nginx-rtmp-module
 
 # Create a working directory for the application
 WORKDIR /app
+
+# Copy and make stream processing script executable
+COPY process_stream.sh /app/process_stream.sh
+RUN chmod +x /app/process_stream.sh
 
 # Expose ports
 EXPOSE 80 1935
