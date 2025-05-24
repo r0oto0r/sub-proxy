@@ -15,7 +15,6 @@ RUN apt-get update && apt-get install -y \
 	python3-venv \
 	pipx \
 	git \
-	wget \
 	curl \
 	build-essential \
 	cmake \
@@ -24,7 +23,6 @@ RUN apt-get update && apt-get install -y \
 	pkg-config \
 	libssl-dev \
 	zlib1g-dev \
-	libpcre3-dev \
 	ffmpeg \
 	gstreamer1.0-tools \
 	gstreamer1.0-plugins-base \
@@ -37,12 +35,8 @@ RUN apt-get update && apt-get install -y \
 	libgstreamer-plugins-bad1.0-dev \
 	gstreamer1.0-plugins-bad-apps \
 	libglib2.0-dev \
-	libgtk-3-dev \
 	libcairo2-dev \
 	libpango1.0-dev \
-	libgdk-pixbuf2.0-dev \
-	libatk1.0-dev \
-	libsoup2.4-dev \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install Rust
