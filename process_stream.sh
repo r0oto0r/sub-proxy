@@ -39,7 +39,6 @@ gst-launch-1.0 \
         shaded-background=true \
         color=0xFFFFFFFF \
         auto-resize=false \
-        wrap-mode=word-char \
         line-alignment=center ! \
     \
     video_tee. ! queue ! \
