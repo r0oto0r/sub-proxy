@@ -1,37 +1,48 @@
-# Use Alpine Linux base image
-FROM alpine:3.20
+# Use Debian Linux base image
+FROM debian:latest
 
 # Set environment variables
-ENV NGINX_VERSION=1.24.0
+ENV NGINX_VERSION=1.26.0
 ENV RTMP_MODULE_VERSION=1.2.2
 
 # Install system dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
 	git \
 	curl \
-	build-base \
+	build-essential \
 	cmake \
-	pkgconfig \
-	openssl-dev \
-	zlib-dev \
-	pcre-dev \
+	pkg-config \
+	libssl-dev \
+	zlib1g-dev \
+	libpcre3-dev \
 	libxml2-dev \
-	libxslt-dev \
-	gd-dev \
-	geoip-dev \
+	libxslt1-dev \
+	libgd-dev \
+	libgeoip-dev \
 	ffmpeg \
-	gstreamer \
-	gst-plugins-base \
-	gst-plugins-good \
-	gst-plugins-bad \
-	gst-plugins-ugly \
-	gst-libav \
-	gstreamer-dev \
-	gst-plugins-base-dev \
-	glib-dev \
-	cairo-dev \
-	pango-dev \
-	&& rm -rf /var/cache/apk/*
+	gstreamer1.0-tools \
+	gstreamer1.0-plugins-base \
+	gstreamer1.0-plugins-good \
+	gstreamer1.0-plugins-bad \
+	gstreamer1.0-plugins-ugly \
+	gstreamer1.0-libav \
+	libgstreamer1.0-dev \
+	libgstreamer-plugins-base1.0-dev \
+	libglib2.0-dev \
+	libcairo2-dev \
+	libpango1.0-dev \
+	clang \
+	libclang-dev \
+	llvm-dev \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Install Rust (using rustup)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+	&& . $HOME/.cargo/env \
+	&& rustup default stable \
+	&& rustup update
+
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build nginx with RTMP module
 WORKDIR /tmp
@@ -87,12 +98,28 @@ RUN ./configure \
 	&& make install
 
 # Create nginx user and necessary directories
-RUN addgroup -g 101 -S nginx \
-	&& adduser -S -D -H -u 101 -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx \
-	&& mkdir -p /var/cache/nginx \
+RUN mkdir -p /var/cache/nginx \
 	&& mkdir -p /var/log/nginx \
-	&& mkdir -p /usr/share/nginx/html \
-	&& chown -R nginx:nginx /var/cache/nginx /var/log/nginx
+	&& mkdir -p /usr/share/nginx/html
+
+RUN cargo install cargo-c
+
+# Build and install gst-whisper
+WORKDIR /tmp
+
+# Check if whisper module is available in GStreamer
+RUN gst-inspect-1.0 whisper || echo "Whisper module not found, will install gst-whisper"
+
+RUN git clone https://github.com/avstack/gst-whisper.git \
+	&& cd gst-whisper \
+	&& cargo cbuild --release \
+	&& cargo cinstall --release --prefix=/usr/local
+
+# Set GST_PLUGIN_PATH to include gst-whisper
+ENV GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/local/lib/x86_64-linux-gnu/gstreamer-1.0
+
+# Check if whisper module is available in GStreamer
+RUN gst-inspect-1.0 whisper || echo "Whisper module not found, will install gst-whisper"
 
 # Copy nginx configuration and HTML files
 COPY nginx.conf /etc/nginx/nginx.conf
@@ -113,6 +140,10 @@ RUN chmod +x /app/process_stream.sh
 # Copy container startup script
 COPY container_start.sh /app/container_start.sh
 RUN chmod +x /app/container_start.sh
+
+# Copy download models script
+COPY download_models.sh /app/download_models.sh
+RUN chmod +x /app/download_models.sh
 
 # Expose ports
 EXPOSE 80 1935

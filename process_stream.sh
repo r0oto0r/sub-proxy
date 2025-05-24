@@ -1,67 +1,40 @@
 #!/bin/bash
 
-# Stream processing with transcription and translation to Twitch
-# Usage: ./process_stream.sh <stream_name>
+# Configuration
+SOURCE_RTMP_URL="rtmp://localhost:1935/live"
+TARGET_RTMP_URL="rtmp://localhost:1935/subtitle"
+WHISPER_LANGUAGE="de"
+TRANSLATE_ENABLED="true"
+VIDEO_BITRATE="2000"
+AUDIO_BITRATE="128000"
+SUBTITLE_FONT="Sans Bold 24"
 
 echo "Starting stream processing for Twitch..."
 if [ -z "$1" ]; then
 	echo "Usage: $0 <stream_name>"
+	echo "Example: $0 my_stream"
 	exit 1
 fi
 
 STREAM_NAME="$1"
 
-gst-launch-1.0 \
-    rtmpsrc location="rtmp://localhost:1935/live/${STREAM_NAME}" ! \
+echo "Processing stream: $STREAM_NAME"
+echo "Source: ${SOURCE_RTMP_URL}/${STREAM_NAME}"
+echo "Target: ${TARGET_RTMP_URL}/${STREAM_NAME}"
+echo "Whisper model: $WHISPER_MODEL_PATH"
+
+export GST_DEBUG=3
+
+# Complete GStreamer pipeline with Whisper transcription/translation and subtitle burning
+gst-launch-1.0 -v \
+    rtmpsrc location="${SOURCE_RTMP_URL}/${STREAM_NAME}" ! \
     flvdemux name=demux \
-    \
-    demux.video ! queue ! \
-    h264parse ! \
-    avdec_h264 ! \
-    videoconvert ! \
-    tee name=video_tee \
-    \
-    demux.audio ! queue ! \
-    aacparse ! \
-    audio/mpeg,mpegversion=4 ! \
-    tee name=audio_tee \
-    \
-    audio_tee. ! queue name=whisper_queue ! \
-    avdec_aac ! \
-    audioconvert ! \
-    audioresample ! \
-    audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
-    whisper ! \
-    textoverlay \
-        name=overlay \
-        font-desc="Sans Bold 24" \
-        valignment=bottom \
-        halignment=center \
-        shaded-background=true \
-        color=0xFFFFFFFF \
-        auto-resize=false \
-        line-alignment=center \
-    \
-    video_tee. ! queue name=video_queue ! \
-    overlay.video_sink \
-    \
-    overlay.src ! queue name=encode_queue ! \
-    x264enc \
-        bitrate=3000 \
-        speed-preset=fast \
-        tune=zerolatency \
-        key-int-max=60 ! \
-    video/x-h264,profile=main ! \
-    h264parse ! \
-    flvmux name=mux \
-    \
-    audio_tee. ! queue name=audio_passthrough_queue ! \
-    avdec_aac ! \
-    audioconvert ! \
-    voaacenc bitrate=128000 ! \
-    aacparse ! \
-    audio/mpeg,mpegversion=4 ! \
-    mux.audio \
-    \
-    mux.src ! queue ! \
-    rtmpsink location="rtmp://live.twitch.tv/live/${STREAM_NAME}"
+    demux.video ! queue ! h264parse ! avdec_h264 ! \
+    textoverlay name=overlay text="Test Subtitle" font-desc="${SUBTITLE_FONT}" valignment=bottom halignment=center ! \
+    videoconvert ! x264enc bitrate=${VIDEO_BITRATE} speed-preset=fast tune=zerolatency ! \
+    h264parse ! flvmux name=mux streamable=true ! \
+    rtmpsink location="${TARGET_RTMP_URL}/${STREAM_NAME}" \
+    demux.audio ! queue ! aacparse ! mux.
+
+echo "Pipeline finished. Exit code: $?"
+
