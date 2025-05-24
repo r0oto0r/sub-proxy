@@ -15,6 +15,10 @@ RUN apk add --no-cache \
 	openssl-dev \
 	zlib-dev \
 	pcre-dev \
+	libxml2-dev \
+	libxslt-dev \
+	gd-dev \
+	geoip-dev \
 	ffmpeg \
 	gstreamer \
 	gst-plugins-base \
