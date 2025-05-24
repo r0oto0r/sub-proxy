@@ -26,6 +26,7 @@ gst-launch-1.0 \
     tee name=audio_tee \
     \
     audio_tee. ! queue name=whisper_queue ! \
+    avdec_aac ! \
     audioconvert ! \
     audioresample ! \
     audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
