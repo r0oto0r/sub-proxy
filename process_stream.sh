@@ -17,7 +17,8 @@ gst-launch-1.0 \
     \
     demux.video ! queue ! \
     h264parse ! \
-    video/x-h264 ! \
+    avdec_h264 ! \
+    videoconvert ! \
     tee name=video_tee \
     \
     demux.audio ! queue ! \
