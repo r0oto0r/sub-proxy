@@ -45,13 +45,6 @@ RUN pipx install openai-whisper
 # Install git-lfs for downloading large model files
 RUN apt-get update && apt-get install -y git-lfs && rm -rf /var/lib/apt/lists/*
 
-# Download OpenAI Whisper models from Hugging Face
-RUN mkdir -p /app/models && \
-	cd /app/models && \
-	git lfs install && \
-	git clone https://huggingface.co/openai/whisper-large-v3 && \
-	git clone https://huggingface.co/openai/whisper-large-v3-turbo
-
 # Set environment variable for Whisper model cache
 ENV WHISPER_CACHE_DIR=/app/models
 
@@ -129,8 +122,16 @@ WORKDIR /app
 COPY process_stream.sh /app/process_stream.sh
 RUN chmod +x /app/process_stream.sh
 
+# Copy model download script
+COPY download_models.sh /app/download_models.sh
+RUN chmod +x /app/download_models.sh
+
+# Copy container startup script
+COPY container_start.sh /app/container_start.sh
+RUN chmod +x /app/container_start.sh
+
 # Expose ports
 EXPOSE 80 1935
 
-# Default command - start nginx in foreground
-CMD ["nginx", "-g", "daemon off;"]
+# Default command - run startup script
+CMD ["/app/container_start.sh"]
