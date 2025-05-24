@@ -37,6 +37,8 @@ RUN apt-get update && apt-get install -y \
 	libglib2.0-dev \
 	libcairo2-dev \
 	libpango1.0-dev \
+	libclang-dev \
+	clang \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install Rust
