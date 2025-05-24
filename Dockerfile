@@ -79,6 +79,7 @@ RUN ./configure \
 	--http-fastcgi-temp-path=/var/cache/nginx/fastcgi_temp \
 	--http-uwsgi-temp-path=/var/cache/nginx/uwsgi_temp \
 	--http-scgi-temp-path=/var/cache/nginx/scgi_temp \
+	--with-debug \
 	--with-compat \
 	--with-file-aio \
 	--with-threads \
