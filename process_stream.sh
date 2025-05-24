@@ -26,7 +26,7 @@ gst-launch-1.0 \
     tee name=audio_tee \
     \
     audio_tee. ! queue ! \
-    transcribebin \
+    transcriberbin \
         name=transcriber \
         language-code=de-DE \
         latency=1000 \
