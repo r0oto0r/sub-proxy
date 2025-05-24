@@ -61,7 +61,7 @@ RUN apt-get update && apt-get install -y git-lfs && rm -rf /var/lib/apt/lists/*
 ENV WHISPER_CACHE_DIR=/app/models
 
 # Set environment variable for gst-whisper model path
-ENV WHISPER_MODEL_PATH=/app/models/ggml-large-v3.bin
+ENV WHISPER_MODEL_PATH=/app/models/ggml-large-v3-turbo.bin
 
 # Build and install nginx with RTMP module
 WORKDIR /tmp

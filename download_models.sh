@@ -8,6 +8,7 @@ set -e
 MODEL_DIR="/app/models"
 WHISPER_LARGE_V3_DIR="${MODEL_DIR}/whisper-large-v3"
 WHISPER_LARGE_V3_TURBO_DIR="${MODEL_DIR}/whisper-large-v3-turbo"
+GGML_LARGE_V3_TURBO_FILE="${MODEL_DIR}/ggml-large-v3-turbo.bin"
 
 echo "Checking for Whisper models in ${MODEL_DIR}..."
 
@@ -32,6 +33,15 @@ if [ ! -d "${WHISPER_LARGE_V3_TURBO_DIR}" ] || [ -z "$(ls -A "${WHISPER_LARGE_V3
     git clone https://huggingface.co/openai/whisper-large-v3-turbo
 else
     echo "whisper-large-v3-turbo model already exists"
+fi
+
+# Check if ggml-large-v3-turbo.bin exists
+if [ ! -f "${GGML_LARGE_V3_TURBO_FILE}" ]; then
+    echo "Downloading ggml-large-v3-turbo.bin model..."
+    cd "${MODEL_DIR}"
+    wget -O ggml-large-v3-turbo.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+else
+    echo "ggml-large-v3-turbo.bin model already exists"
 fi
 
 echo "Model download check completed"
