@@ -30,7 +30,9 @@ gst-launch-1.0 \
     audioresample ! \
     audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
     whisper ! \
+    overlay.text_sink \
     \
+    video_tee. ! queue ! \
     textoverlay \
         name=overlay \
         font-desc="Sans Bold 24" \
@@ -40,11 +42,7 @@ gst-launch-1.0 \
         color=0xFFFFFFFF \
         auto-resize=false \
         line-alignment=center ! \
-    \
-    video_tee. ! queue ! \
-    overlay.video_sink \
-    \
-    overlay.src ! queue ! \
+    queue ! \
     x264enc \
         bitrate=3000 \
         speed-preset=fast \
