@@ -59,12 +59,12 @@ ENV WHISPER_CACHE_DIR=/app/models
 WORKDIR /tmp
 
 # Download nginx and nginx-rtmp-module
-RUN wget http://nginx.org/download/nginx-1.24.0.tar.gz && \
-	tar -xzf nginx-1.24.0.tar.gz && \
+RUN wget http://nginx.org/download/nginx-1.26.0.tar.gz && \
+	tar -xzf nginx-1.26.0.tar.gz && \
 	git clone https://github.com/arut/nginx-rtmp-module.git
 
 # Configure and build nginx with RTMP module
-WORKDIR /tmp/nginx-1.24.0
+WORKDIR /tmp/nginx-1.26.0
 RUN ./configure \
 	--prefix=/etc/nginx \
 	--sbin-path=/usr/sbin/nginx \
