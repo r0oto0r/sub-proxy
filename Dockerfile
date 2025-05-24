@@ -58,16 +58,18 @@ RUN apt-get update && apt-get install -y git-lfs && rm -rf /var/lib/apt/lists/*
 # Set environment variable for Whisper model cache
 ENV WHISPER_CACHE_DIR=/app/models
 
+# Set environment variable for gst-whisper model path
+ENV WHISPER_MODEL_PATH=/app/models/ggml-large-v3.bin
+
 # Build and install nginx with RTMP module
 WORKDIR /tmp
 
-# Build transcriberbin module
-RUN git clone https://github.com/GStreamer/gst-plugins-rs.git /tmp/gst-plugins-rs
+# Build and install gst-whisper plugin
+RUN git clone https://github.com/avstack/gst-whisper.git /tmp/gst-whisper
 
-# Build specific plugins we need (transcriberbin and related)
-WORKDIR /tmp/gst-plugins-rs
-RUN cargo cbuild -p gst-plugin-closedcaption --release && \
-	cargo cinstall -p gst-plugin-closedcaption --release --prefix=/usr
+WORKDIR /tmp/gst-whisper
+RUN cargo cbuild --release && \
+	cargo cinstall --release --prefix=/usr
 
 # Set GST_PLUGIN_PATH to include our new plugins
 ENV GST_PLUGIN_PATH="/usr/lib/gstreamer-1.0"
@@ -85,7 +87,7 @@ COPY index.html /usr/share/nginx/html/index.html
 
 # Clean up build dependencies
 WORKDIR /
-RUN rm -rf /tmp/gst-plugins-rs
+RUN rm -rf /tmp/gst-whisper
 
 # Create a working directory for the application
 WORKDIR /app

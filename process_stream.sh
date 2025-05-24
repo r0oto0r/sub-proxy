@@ -26,16 +26,10 @@ gst-launch-1.0 \
     tee name=audio_tee \
     \
     audio_tee. ! queue ! \
-    transcriberbin \
-        name=transcriber \
-        language-code=de-DE \
-        latency=1000 \
-        passthrough=true \
-        transcriber=whisper \
-        model=large-v3 \
-        translate=true \
-        translate-src-language=de \
-        translate-target-language=en ! \
+    audioconvert ! \
+    audioresample ! \
+    audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
+    whisper ! \
     \
     textoverlay \
         name=overlay \
