@@ -39,7 +39,7 @@ fi
 if [ ! -f "${GGML_LARGE_V3_TURBO_FILE}" ]; then
     echo "Downloading ggml-large-v3-turbo.bin model..."
     cd "${MODEL_DIR}"
-    wget -O ggml-large-v3-turbo.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+    curl -L -o ggml-large-v3-turbo.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
 else
     echo "ggml-large-v3-turbo.bin model already exists"
 fi
