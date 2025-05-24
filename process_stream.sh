@@ -3,6 +3,12 @@
 # Stream processing with transcription and translation to Twitch
 # Usage: ./process_stream.sh <stream_name>
 
+echo "Starting stream processing for Twitch..."
+if [ -z "$1" ]; then
+	echo "Usage: $0 <stream_name>"
+	exit 1
+fi
+
 STREAM_NAME="$1"
 
 gst-launch-1.0 \
