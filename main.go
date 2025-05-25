@@ -117,6 +117,8 @@ func (as *AudioStreamer) connectToWhisperWithRetry() error {
 func (as *AudioStreamer) startFFmpeg() error {
 	rtmpURL := fmt.Sprintf("rtmp://localhost:1935/live/%s", as.streamName)
 
+	log.Printf("[%s] startFFmpeg: Starting FFmpeg with RTMP URL: %s", as.streamName, rtmpURL)
+
 	// FFmpeg command to extract audio and convert to webm format for WhisperLiveKit
 	// Create short duration WebM chunks similar to MediaRecorder
 	args := []string{
@@ -130,15 +132,19 @@ func (as *AudioStreamer) startFFmpeg() error {
 		"-", // Output to stdout
 	}
 
+	log.Printf("[%s] startFFmpeg: FFmpeg command: ffmpeg %v", as.streamName, args)
+
 	as.ffmpegCmd = exec.CommandContext(as.ctx, "ffmpeg", args...)
 
 	stdout, err := as.ffmpegCmd.StdoutPipe()
 	if err != nil {
+		log.Printf("[%s] startFFmpeg: Error creating stdout pipe: %v", as.streamName, err)
 		return err
 	}
 
 	stderr, err := as.ffmpegCmd.StderrPipe()
 	if err != nil {
+		log.Printf("[%s] startFFmpeg: Error creating stderr pipe: %v", as.streamName, err)
 		return err
 	}
 
@@ -149,17 +155,20 @@ func (as *AudioStreamer) startFFmpeg() error {
 			n, err := stderr.Read(buf)
 			if err != nil {
 				if err != io.EOF {
-					log.Printf("FFmpeg stderr error: %v", err)
+					log.Printf("[%s] FFmpeg stderr error: %v", as.streamName, err)
 				}
 				return
 			}
-			log.Printf("FFmpeg: %s", string(buf[:n]))
+			log.Printf("[%s] FFmpeg: %s", as.streamName, string(buf[:n]))
 		}
 	}()
 
 	if err := as.ffmpegCmd.Start(); err != nil {
+		log.Printf("[%s] startFFmpeg: Error starting FFmpeg: %v", as.streamName, err)
 		return err
 	}
+
+	log.Printf("[%s] startFFmpeg: FFmpeg process started successfully with PID %d", as.streamName, as.ffmpegCmd.Process.Pid)
 
 	// Store stdout pipe for reading audio data
 	as.ffmpegStdout = stdout
@@ -221,16 +230,20 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 
 	// Use larger buffer for WebM chunks
 	buffer := make([]byte, 16384) // 16KB buffer for WebM chunks
+	chunkCount := 0
+
+	log.Printf("[%s] readAudioFromFFmpeg: Starting to read audio from FFmpeg", as.streamName)
 
 	for {
 		select {
 		case <-as.ctx.Done():
 			// Send stop signal to WhisperLiveKit before closing
+			log.Printf("[%s] readAudioFromFFmpeg: Context cancelled, sending stop signal", as.streamName)
 			go as.sendStopSignal()
 			return
 		default:
 			if as.ffmpegStdout == nil {
-				log.Printf("FFmpeg stdout is nil, waiting for restart...")
+				log.Printf("[%s] readAudioFromFFmpeg: FFmpeg stdout is nil, waiting for restart...", as.streamName)
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -238,7 +251,9 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 			n, err := as.ffmpegStdout.Read(buffer)
 			if err != nil {
 				if err != io.EOF {
-					log.Printf("Error reading from FFmpeg: %v", err)
+					log.Printf("[%s] readAudioFromFFmpeg: Error reading from FFmpeg: %v", as.streamName, err)
+				} else {
+					log.Printf("[%s] readAudioFromFFmpeg: FFmpeg stdout EOF", as.streamName)
 				}
 				// Wait a bit before trying again (FFmpeg might be restarting)
 				time.Sleep(100 * time.Millisecond)
@@ -246,19 +261,24 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 			}
 
 			if n > 0 {
+				chunkCount++
+				log.Printf("[%s] readAudioFromFFmpeg: Read audio chunk #%d with %d bytes from FFmpeg", as.streamName, chunkCount, n)
+
 				// Send audio chunk to buffer
 				chunk := make([]byte, n)
 				copy(chunk, buffer[:n])
 
 				select {
 				case as.audioBuffer <- chunk:
+					log.Printf("[%s] readAudioFromFFmpeg: Successfully buffered audio chunk #%d", as.streamName, chunkCount)
 				case <-as.ctx.Done():
 					// Send stop signal before exiting
+					log.Printf("[%s] readAudioFromFFmpeg: Context cancelled while buffering, sending stop signal", as.streamName)
 					go as.sendStopSignal()
 					return
 				default:
 					// Buffer full, skip this chunk
-					log.Printf("Audio buffer full, skipping chunk")
+					log.Printf("[%s] readAudioFromFFmpeg: Audio buffer full, skipping chunk #%d", as.streamName, chunkCount)
 				}
 			}
 		}
@@ -266,31 +286,39 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 }
 
 func (as *AudioStreamer) sendAudioToWhisper() {
+	chunkCount := 0
 	for {
 		select {
 		case <-as.ctx.Done():
 			// Send stop signal when context is cancelled
+			log.Printf("[%s] sendAudioToWhisper: Context cancelled, sending stop signal", as.streamName)
 			as.sendStopSignal()
 			return
 		case audioChunk, ok := <-as.audioBuffer:
 			if !ok {
 				// Channel closed, send stop signal
+				log.Printf("[%s] sendAudioToWhisper: Audio buffer channel closed, sending stop signal", as.streamName)
 				as.sendStopSignal()
 				return
 			}
 
+			chunkCount++
+			log.Printf("[%s] sendAudioToWhisper: Received audio chunk #%d with %d bytes from buffer", as.streamName, chunkCount, len(audioChunk))
+
 			// Skip if no connection
 			if as.conn == nil {
-				log.Printf("No WhisperLiveKit connection, skipping audio chunk")
+				log.Printf("[%s] sendAudioToWhisper: No WhisperLiveKit connection, skipping audio chunk #%d", as.streamName, chunkCount)
 				continue
 			}
 
 			// Send raw audio bytes to WhisperLiveKit
+			log.Printf("[%s] sendAudioToWhisper: Sending audio chunk #%d (%d bytes) to WhisperLiveKit", as.streamName, chunkCount, len(audioChunk))
 			if err := as.conn.WriteMessage(websocket.BinaryMessage, audioChunk); err != nil {
-				log.Printf("Error sending audio to WhisperLiveKit: %v", err)
+				log.Printf("[%s] sendAudioToWhisper: Error sending audio chunk #%d to WhisperLiveKit: %v", as.streamName, chunkCount, err)
 				// Don't return here, let the connection retry logic handle it
 				continue
 			}
+			log.Printf("[%s] sendAudioToWhisper: Successfully sent audio chunk #%d to WhisperLiveKit", as.streamName, chunkCount)
 		}
 	}
 }
