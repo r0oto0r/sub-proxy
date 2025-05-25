@@ -614,6 +614,10 @@ func main() {
 	// Setup HTTP routes
 	http.HandleFunc("/rtmp_publish", streamManager.handlePublish)
 	http.HandleFunc("/rtmp_done", streamManager.handleDone)
+	http.HandleFunc("/rtmp_play", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
 	// Start HTTP server
 	server := &http.Server{
