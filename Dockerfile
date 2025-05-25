@@ -1,10 +1,11 @@
 # Use CUDA 12.9 image
-FROM nvidia/cuda:12.9.0-devel-ubuntu24.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 # Set environment variables
 ENV NGINX_VERSION=1.26.0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/usr/local/go/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -13,7 +14,6 @@ RUN apt-get update && apt-get install -y \
 	wget \
 	build-essential \
 	cmake \
-	pipx \
 	pkg-config \
 	libssl-dev \
 	zlib1g-dev \
@@ -34,12 +34,11 @@ RUN wget https://go.dev/dl/go1.22.2.linux-amd64.tar.gz \
 	&& rm go1.22.2.linux-amd64.tar.gz
 
 # Create Python virtual environment and install WhisperLiveKit
-RUN python3 -m venv /opt/whisperlivekit-venv
-RUN /opt/whisperlivekit-venv/bin/pip install --upgrade pip
-RUN /opt/whisperlivekit-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-RUN /opt/whisperlivekit-venv/bin/pip install mosestokenizer wtpsplit
-RUN /opt/whisperlivekit-venv/bin/pip install diart
-RUN /opt/whisperlivekit-venv/bin/pip install whisperlivekit
+RUN pip install --upgrade pip
+RUN pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN pip install mosestokenizer wtpsplit
+RUN pip install diart
+RUN pip install whisperlivekit
 
 # Build nginx with RTMP module
 WORKDIR /tmp
