@@ -13,6 +13,7 @@ whisperlivekit-server \
 	--port 8000 \
 	--language de \
 	--task translate \
+	--vac \
 	--diarization \
 	--buffer_trimming sentence &
 
