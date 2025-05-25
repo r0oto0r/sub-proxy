@@ -18,8 +18,21 @@ func NewTranscriptProcessor() *TranscriptProcessor {
 }
 
 func (tp *TranscriptProcessor) ProcessTranscript(transcript string, streamName string) {
+	// Recover from any panics to prevent the service from crashing
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic in ProcessTranscript: %v", r)
+		}
+	}()
+
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
+
+	// Validate input
+	if transcript == "" {
+		log.Printf("[%s] Received empty transcript, skipping", streamName)
+		return
+	}
 
 	// Stub implementation - just log for now
 	log.Printf("[%s] Transcript: %s", streamName, transcript)
@@ -29,6 +42,11 @@ func (tp *TranscriptProcessor) ProcessTranscript(transcript string, streamName s
 		tp.transcripts[streamName] = make([]string, 0)
 	}
 	tp.transcripts[streamName] = append(tp.transcripts[streamName], transcript)
+
+	// Keep only the last 100 transcripts to prevent memory growth
+	if len(tp.transcripts[streamName]) > 100 {
+		tp.transcripts[streamName] = tp.transcripts[streamName][len(tp.transcripts[streamName])-100:]
+	}
 
 	// TODO: Implement actual transcript processing logic
 	// This could include:

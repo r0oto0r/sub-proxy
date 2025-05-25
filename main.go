@@ -17,57 +17,65 @@ import (
 
 // AudioStreamer handles audio streaming to WhisperLiveKit
 type AudioStreamer struct {
-	streamName   string
-	whisperURL   string
-	conn         *websocket.Conn
-	processor    *TranscriptProcessor
-	ctx          context.Context
-	cancel       context.CancelFunc
-	ffmpegCmd    *exec.Cmd
-	ffmpegStdout io.ReadCloser
-	audioBuffer  chan []byte
-	chunkSize    int
-	sampleRate   int
-	youtubeKey   string
-	youtubeCmd   *exec.Cmd
+	streamName          string
+	whisperURL          string
+	conn                *websocket.Conn
+	processor           *TranscriptProcessor
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	ffmpegCmd           *exec.Cmd
+	ffmpegStdout        io.ReadCloser
+	audioBuffer         chan []byte
+	chunkSize           int
+	sampleRate          int
+	youtubeKey          string
+	youtubeCmd          *exec.Cmd
+	ffmpegRestartCount  int
+	youtubeRestartCount int
+	transcriptErrors    int
+	maxRestarts         int
+	restartDelay        time.Duration
 }
 
 func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProcessor) *AudioStreamer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &AudioStreamer{
-		streamName:  streamName,
-		whisperURL:  whisperURL,
-		processor:   processor,
-		ctx:         ctx,
-		cancel:      cancel,
-		audioBuffer: make(chan []byte, 100),
-		chunkSize:   1024,       // 1KB chunks
-		sampleRate:  16000,      // 16kHz for Whisper
-		youtubeKey:  streamName, // Use stream name as YouTube key
+		streamName:          streamName,
+		whisperURL:          whisperURL,
+		processor:           processor,
+		ctx:                 ctx,
+		cancel:              cancel,
+		audioBuffer:         make(chan []byte, 100),
+		chunkSize:           1024,       // 1KB chunks
+		sampleRate:          16000,      // 16kHz for Whisper
+		youtubeKey:          streamName, // Use stream name as YouTube key
+		ffmpegRestartCount:  0,
+		youtubeRestartCount: 0,
+		transcriptErrors:    0,
+		maxRestarts:         10, // Maximum restarts before giving up
+		restartDelay:        2 * time.Second,
 	}
 }
 
 func (as *AudioStreamer) Start() error {
 	log.Printf("Starting audio streamer for stream: %s", as.streamName)
 
-	// Connect to WhisperLiveKit WebSocket
-	if err := as.connectToWhisper(); err != nil {
-		return fmt.Errorf("failed to connect to WhisperLiveKit: %v", err)
+	// Connect to WhisperLiveKit WebSocket with retry
+	if err := as.connectToWhisperWithRetry(); err != nil {
+		return fmt.Errorf("failed to connect to WhisperLiveKit after retries: %v", err)
 	}
 
-	// Start FFmpeg process to extract audio
-	if err := as.startFFmpeg(); err != nil {
-		return fmt.Errorf("failed to start FFmpeg: %v", err)
-	}
+	// Start FFmpeg process to extract audio with auto-restart
+	go as.startFFmpegWithRestart()
 
 	// Start goroutines for processing
 	go as.readAudioFromFFmpeg()
 	go as.sendAudioToWhisper()
-	go as.receiveTranscriptions()
+	go as.receiveTranscriptionsWithRetry()
 
-	// Start YouTube forwarding after 5 seconds
-	go as.startYouTubeForwarding()
+	// Start YouTube forwarding after 5 seconds with auto-restart
+	go as.startYouTubeForwardingWithRestart()
 
 	return nil
 }
@@ -84,6 +92,22 @@ func (as *AudioStreamer) connectToWhisper() error {
 
 	log.Printf("Connected to WhisperLiveKit WebSocket")
 	return nil
+}
+
+func (as *AudioStreamer) connectToWhisperWithRetry() error {
+	maxRetries := 5
+	for i := 0; i < maxRetries; i++ {
+		if err := as.connectToWhisper(); err != nil {
+			log.Printf("Failed to connect to WhisperLiveKit (attempt %d/%d): %v", i+1, maxRetries, err)
+			if i < maxRetries-1 {
+				time.Sleep(as.restartDelay)
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("failed to connect after %d attempts", maxRetries)
 }
 
 func (as *AudioStreamer) startFFmpeg() error {
@@ -138,6 +162,44 @@ func (as *AudioStreamer) startFFmpeg() error {
 	return nil
 }
 
+func (as *AudioStreamer) startFFmpegWithRestart() {
+	for {
+		select {
+		case <-as.ctx.Done():
+			return
+		default:
+			if as.ffmpegRestartCount >= as.maxRestarts {
+				log.Printf("FFmpeg failed too many times (%d), giving up", as.ffmpegRestartCount)
+				return
+			}
+
+			log.Printf("Starting FFmpeg (attempt %d)", as.ffmpegRestartCount+1)
+			if err := as.startFFmpeg(); err != nil {
+				log.Printf("Failed to start FFmpeg: %v", err)
+				as.ffmpegRestartCount++
+				time.Sleep(as.restartDelay)
+				continue
+			}
+
+			// Wait for FFmpeg to finish or fail
+			if as.ffmpegCmd != nil {
+				err := as.ffmpegCmd.Wait()
+				if err != nil {
+					log.Printf("FFmpeg exited with error: %v, restarting...", err)
+					as.ffmpegRestartCount++
+					time.Sleep(as.restartDelay)
+					continue
+				}
+			}
+
+			// If we get here, FFmpeg exited cleanly, which shouldn't happen in normal operation
+			log.Printf("FFmpeg exited unexpectedly, restarting...")
+			as.ffmpegRestartCount++
+			time.Sleep(as.restartDelay)
+		}
+	}
+}
+
 func (as *AudioStreamer) readAudioFromFFmpeg() {
 	defer close(as.audioBuffer)
 
@@ -148,12 +210,20 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 		case <-as.ctx.Done():
 			return
 		default:
+			if as.ffmpegStdout == nil {
+				log.Printf("FFmpeg stdout is nil, waiting for restart...")
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
 			n, err := as.ffmpegStdout.Read(buffer)
 			if err != nil {
 				if err != io.EOF {
 					log.Printf("Error reading from FFmpeg: %v", err)
 				}
-				return
+				// Wait a bit before trying again (FFmpeg might be restarting)
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 
 			if n > 0 {
@@ -184,39 +254,92 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 				return
 			}
 
+			// Skip if no connection
+			if as.conn == nil {
+				log.Printf("No WhisperLiveKit connection, skipping audio chunk")
+				continue
+			}
+
 			// Send raw audio bytes to WhisperLiveKit
 			if err := as.conn.WriteMessage(websocket.BinaryMessage, audioChunk); err != nil {
 				log.Printf("Error sending audio to WhisperLiveKit: %v", err)
-				return
+				// Don't return here, let the connection retry logic handle it
+				continue
 			}
 		}
 	}
 }
 
-func (as *AudioStreamer) receiveTranscriptions() {
+func (as *AudioStreamer) receiveTranscriptions() error {
+	for {
+		select {
+		case <-as.ctx.Done():
+			return nil
+		default:
+			_, message, err := as.conn.ReadMessage()
+			if err != nil {
+				return fmt.Errorf("error reading from WhisperLiveKit: %v", err)
+			}
+
+			// Process the transcription response
+			transcript := string(message)
+
+			// Process transcript in a separate goroutine to avoid blocking
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("Panic in transcript processing: %v", r)
+					}
+				}()
+				as.processor.ProcessTranscript(transcript, as.streamName)
+			}()
+		}
+	}
+}
+
+func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 	for {
 		select {
 		case <-as.ctx.Done():
 			return
 		default:
-			_, message, err := as.conn.ReadMessage()
-			if err != nil {
-				log.Printf("Error reading from WhisperLiveKit: %v", err)
+			if as.transcriptErrors >= as.maxRestarts {
+				log.Printf("Transcription service failed too many times (%d), giving up", as.transcriptErrors)
 				return
 			}
 
-			// Process the transcription response
-			transcript := string(message)
-			as.processor.ProcessTranscript(transcript, as.streamName)
+			// Try to receive transcriptions
+			if err := as.receiveTranscriptions(); err != nil {
+				log.Printf("Transcription error: %v, restarting in %v...", err, as.restartDelay)
+				as.transcriptErrors++
+
+				// Close current connection and reconnect
+				if as.conn != nil {
+					as.conn.Close()
+				}
+
+				time.Sleep(as.restartDelay)
+
+				// Try to reconnect to Whisper
+				if err := as.connectToWhisperWithRetry(); err != nil {
+					log.Printf("Failed to reconnect to WhisperLiveKit: %v", err)
+					continue
+				}
+
+				// Reset error count on successful reconnection
+				as.transcriptErrors = 0
+				log.Printf("Successfully reconnected to WhisperLiveKit")
+				continue
+			}
+
+			// If receiveTranscriptions returns without error, it means it exited cleanly
+			log.Printf("Transcription service exited cleanly, restarting...")
+			time.Sleep(as.restartDelay)
 		}
 	}
 }
 
-func (as *AudioStreamer) startYouTubeForwarding() {
-	// Wait 5 seconds before starting YouTube forwarding
-	log.Printf("Waiting 5 seconds before starting YouTube forwarding for stream: %s", as.streamName)
-	time.Sleep(5 * time.Second)
-
+func (as *AudioStreamer) startYouTubeForwarding() error {
 	rtmpInputURL := fmt.Sprintf("rtmp://localhost:1935/live/%s", as.streamName)
 	youtubeRTMPURL := fmt.Sprintf("rtmp://a.rtmp.youtube.com/live2/%s", as.youtubeKey)
 
@@ -235,8 +358,7 @@ func (as *AudioStreamer) startYouTubeForwarding() {
 	// Capture stderr for logging
 	stderr, err := as.youtubeCmd.StderrPipe()
 	if err != nil {
-		log.Printf("Error creating stderr pipe for YouTube FFmpeg: %v", err)
-		return
+		return fmt.Errorf("error creating stderr pipe for YouTube FFmpeg: %v", err)
 	}
 
 	// Log FFmpeg errors for YouTube stream
@@ -255,17 +377,52 @@ func (as *AudioStreamer) startYouTubeForwarding() {
 	}()
 
 	if err := as.youtubeCmd.Start(); err != nil {
-		log.Printf("Failed to start YouTube FFmpeg: %v", err)
-		return
+		return fmt.Errorf("failed to start YouTube FFmpeg: %v", err)
 	}
 
 	log.Printf("YouTube forwarding started for stream: %s", as.streamName)
+	return nil
+}
 
-	// Wait for the command to finish
-	if err := as.youtubeCmd.Wait(); err != nil {
-		log.Printf("YouTube FFmpeg finished with error: %v", err)
-	} else {
-		log.Printf("YouTube FFmpeg finished successfully for stream: %s", as.streamName)
+func (as *AudioStreamer) startYouTubeForwardingWithRestart() {
+	// Wait 5 seconds before starting YouTube forwarding
+	log.Printf("Waiting 5 seconds before starting YouTube forwarding for stream: %s", as.streamName)
+	time.Sleep(5 * time.Second)
+
+	for {
+		select {
+		case <-as.ctx.Done():
+			return
+		default:
+			if as.youtubeRestartCount >= as.maxRestarts {
+				log.Printf("YouTube forwarding failed too many times (%d), giving up", as.youtubeRestartCount)
+				return
+			}
+
+			log.Printf("Starting YouTube forwarding (attempt %d)", as.youtubeRestartCount+1)
+			if err := as.startYouTubeForwarding(); err != nil {
+				log.Printf("Failed to start YouTube forwarding: %v", err)
+				as.youtubeRestartCount++
+				time.Sleep(as.restartDelay)
+				continue
+			}
+
+			// Wait for YouTube forwarding to finish or fail
+			if as.youtubeCmd != nil {
+				err := as.youtubeCmd.Wait()
+				if err != nil {
+					log.Printf("YouTube forwarding exited with error: %v, restarting...", err)
+					as.youtubeRestartCount++
+					time.Sleep(as.restartDelay)
+					continue
+				}
+			}
+
+			// If we get here, YouTube forwarding exited cleanly
+			log.Printf("YouTube forwarding exited unexpectedly, restarting...")
+			as.youtubeRestartCount++
+			time.Sleep(as.restartDelay)
+		}
 	}
 }
 
