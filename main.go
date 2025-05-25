@@ -113,25 +113,23 @@ func (sm *StreamManager) handleDone(w http.ResponseWriter, r *http.Request) {
 
 // AudioStreamer handles audio streaming to WhisperLiveKit
 type AudioStreamer struct {
-	streamName           string
-	whisperURL           string
-	conn                 *websocket.Conn
-	processor            *TranscriptProcessor
-	ctx                  context.Context
-	cancel               context.CancelFunc
-	ffmpegCmd            *exec.Cmd
-	ffmpegStdout         io.ReadCloser
-	audioBuffer          chan []byte
-	chunkSize            int
-	sampleRate           int
-	ffmpegRestartCount   int
-	transcriptErrors     int
-	maxRestarts          int
-	restartDelay         time.Duration
-	isConnected          bool
-	connMutex            sync.Mutex
-	lastAudioTime        time.Time
-	audioTimeoutDuration time.Duration
+	streamName         string
+	whisperURL         string
+	conn               *websocket.Conn
+	processor          *TranscriptProcessor
+	ctx                context.Context
+	cancel             context.CancelFunc
+	ffmpegCmd          *exec.Cmd
+	ffmpegStdout       io.ReadCloser
+	audioBuffer        chan []byte
+	chunkSize          int
+	sampleRate         int
+	ffmpegRestartCount int
+	transcriptErrors   int
+	maxRestarts        int
+	restartDelay       time.Duration
+	isConnected        bool
+	connMutex          sync.Mutex
 }
 
 func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProcessor) *AudioStreamer {

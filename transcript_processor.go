@@ -23,7 +23,7 @@ type WhisperResponse struct {
 type Line struct {
 	Speaker int     `json:"speaker"`
 	Text    string  `json:"text"`
-	Beg     float64 `json:"beg,omitempty"`
+	Beg     string  `json:"beg,omitempty"`
 	End     float64 `json:"end,omitempty"`
 }
 
