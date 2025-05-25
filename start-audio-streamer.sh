@@ -3,33 +3,24 @@
 # Audio streamer wrapper script for proper logging
 STREAM_NAME="$1"
 LOG_FILE="/var/log/audio-streamer-${STREAM_NAME}.log"
-PIPE_FILE="/var/log/audio-streamer-${STREAM_NAME}.pipe"
 
 # Ensure log directory exists
 mkdir -p /var/log
 
-# Create named pipe for real-time log forwarding
-if [ ! -p "$PIPE_FILE" ]; then
-    mkfifo "$PIPE_FILE"
+# Log start time and stream name to both stdout and log file
+echo "$(date): [WRAPPER] Starting audio streamer for stream: $STREAM_NAME" | tee "$LOG_FILE"
+echo "$(date): [WRAPPER] Log file: $LOG_FILE" | tee -a "$LOG_FILE"
+echo "$(date): [WRAPPER] Current working directory: $(pwd)" | tee -a "$LOG_FILE"
+echo "$(date): [WRAPPER] Audio streamer binary exists: $(ls -la /app/audio-streamer)" | tee -a "$LOG_FILE"
+
+# Test if the binary is executable
+if [ ! -x "/app/audio-streamer" ]; then
+    echo "$(date): [WRAPPER] ERROR: /app/audio-streamer is not executable!" | tee -a "$LOG_FILE"
+    exit 1
 fi
 
-# Log start time and stream name
-echo "$(date): Starting audio streamer for stream: $STREAM_NAME" | tee -a "$LOG_FILE"
+# Start the Go application and capture all output
+echo "$(date): [WRAPPER] Executing: /app/audio-streamer $STREAM_NAME" | tee -a "$LOG_FILE"
 
-# Start a background process to read from the pipe and forward to both log file and stdout
-(
-    while true; do
-        if [ -p "$PIPE_FILE" ]; then
-            cat "$PIPE_FILE" | while IFS= read -r line; do
-                timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-                log_line="$timestamp [audio-streamer-$STREAM_NAME] $line"
-                echo "$log_line" | tee -a "$LOG_FILE"
-            done
-        fi
-        sleep 1
-    done
-) &
-
-# Start the Go application and redirect output to the pipe
-# Use exec to replace the shell process with the Go application
-/app/audio-streamer "$STREAM_NAME" > "$PIPE_FILE" 2>&1
+# Use a simpler approach - just redirect everything to the log file and use tee to also show on stdout
+exec /app/audio-streamer "$STREAM_NAME" 2>&1 | tee -a "$LOG_FILE"
