@@ -126,10 +126,9 @@ RUN go mod download
 # Build Go application
 RUN go build -o audio-streamer .
 
-# Copy scripts
+# Copy container startup script
 COPY container_start.sh /app/container_start.sh
-COPY start-audio-streamer.sh /app/start-audio-streamer.sh
-RUN chmod +x /app/container_start.sh /app/start-audio-streamer.sh
+RUN chmod +x /app/container_start.sh
 
 # Expose ports
 EXPOSE 80 1935 8000
