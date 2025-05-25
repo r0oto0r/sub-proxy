@@ -44,7 +44,7 @@ func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProces
 		ctx:                ctx,
 		cancel:             cancel,
 		audioBuffer:        make(chan []byte, 100),
-		chunkSize:          1024,  // 1KB chunks
+		chunkSize:          4096,  // 4KB chunks for WebM
 		sampleRate:         16000, // 16kHz for Whisper
 		ffmpegRestartCount: 0,
 		transcriptErrors:   0,
@@ -76,13 +76,24 @@ func (as *AudioStreamer) connectToWhisper() error {
 	u := url.URL{Scheme: "ws", Host: as.whisperURL, Path: "/asr"}
 	log.Printf("Connecting to WhisperLiveKit at %s", u.String())
 
+	// Set headers for WhisperLiveKit compatibility
+	headers := make(map[string][]string)
+	headers["User-Agent"] = []string{"SubProxy-AudioStreamer/1.0"}
+
+	// Create dialer with proper configuration
+	dialer := websocket.DefaultDialer
+	dialer.HandshakeTimeout = 10 * time.Second
+
 	var err error
-	as.conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
+	as.conn, _, err = dialer.Dial(u.String(), headers)
 	if err != nil {
 		return err
 	}
 
 	log.Printf("Connected to WhisperLiveKit WebSocket")
+
+	// Send initial configuration if needed
+	// WhisperLiveKit might expect certain initialization parameters
 	return nil
 }
 
@@ -105,14 +116,14 @@ func (as *AudioStreamer) connectToWhisperWithRetry() error {
 func (as *AudioStreamer) startFFmpeg() error {
 	rtmpURL := fmt.Sprintf("rtmp://localhost:1935/live/%s", as.streamName)
 
-	// FFmpeg command to extract audio and convert to raw PCM
+	// FFmpeg command to extract audio and convert to webm format for WhisperLiveKit
 	args := []string{
 		"-i", rtmpURL,
-		"-vn",                  // No video
-		"-acodec", "pcm_s16le", // 16-bit PCM little endian
+		"-vn",                // No video
+		"-acodec", "libopus", // Opus codec (preferred by WhisperLiveKit)
 		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate
 		"-ac", "1", // Mono
-		"-f", "s16le", // Raw 16-bit little endian format
+		"-f", "webm", // WebM container format
 		"-", // Output to stdout
 	}
 
@@ -195,7 +206,7 @@ func (as *AudioStreamer) startFFmpegWithRestart() {
 func (as *AudioStreamer) readAudioFromFFmpeg() {
 	defer close(as.audioBuffer)
 
-	buffer := make([]byte, as.chunkSize*2) // 2 bytes per sample for 16-bit
+	buffer := make([]byte, as.chunkSize) // WebM chunks can vary in size
 
 	for {
 		select {
@@ -273,8 +284,11 @@ func (as *AudioStreamer) receiveTranscriptions() error {
 				return fmt.Errorf("error reading from WhisperLiveKit: %v", err)
 			}
 
-			// Process the transcription response
+			// Process the transcription response (JSON format)
 			transcript := string(message)
+
+			// Log the raw message for debugging
+			log.Printf("[%s] Raw WebSocket message: %s", as.streamName, transcript)
 
 			// Process transcript in a separate goroutine to avoid blocking
 			go func() {
