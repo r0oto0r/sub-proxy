@@ -13,7 +13,6 @@ whisperlivekit-server \
 	--port 8000 \
 	--language de \
 	--task translate \
-	--vac \
 	--buffer_trimming sentence &
 
 echo "Starting nginx..."
