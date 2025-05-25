@@ -14,7 +14,6 @@ whisperlivekit-server \
 	--language de \
 	--task translate \
 	--vac \
-	--diarization \
 	--buffer_trimming sentence &
 
 echo "Starting nginx..."
