@@ -21,10 +21,10 @@ type WhisperResponse struct {
 
 // Line represents a transcription line with speaker and timing info
 type Line struct {
-	Speaker int     `json:"speaker"`
-	Text    string  `json:"text"`
-	Beg     string  `json:"beg,omitempty"`
-	End     float64 `json:"end,omitempty"`
+	Speaker int    `json:"speaker"`
+	Text    string `json:"text"`
+	Beg     string `json:"beg,omitempty"`
+	End     string `json:"end,omitempty"`
 }
 
 // TranscriptProcessor handles transcription responses from WhisperLiveKit
