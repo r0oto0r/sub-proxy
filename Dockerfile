@@ -44,6 +44,7 @@ RUN pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu
 RUN pip install mosestokenizer wtpsplit
 RUN pip install diart
 RUN pip install whisperlivekit
+RUN pip install huggingface_hub
 
 # Build nginx with RTMP module
 WORKDIR /tmp

@@ -8,5 +8,6 @@ services:
       - "8000:8000"  # WhisperLiveKit port
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - HUGGINGFACE_TOKEN=TOKEN
     runtime: nvidia
     restart: unless-stopped
