@@ -25,4 +25,7 @@ echo "Starting Go HTTP server in background..."
 	done &
 
 echo "Starting nginx..."
-nginx -g "daemon off;"
+nginx -g "daemon off;" 2>&1 | \
+	while IFS= read -r line; do
+		echo -e "\033[33m[Nginx]\033[0m $line"
+	done
