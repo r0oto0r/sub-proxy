@@ -33,9 +33,11 @@ RUN wget https://go.dev/dl/go1.22.2.linux-amd64.tar.gz \
 	&& tar -C /usr/local -xzf go1.22.2.linux-amd64.tar.gz \
 	&& rm go1.22.2.linux-amd64.tar.gz
 
-# Install WhisperLiveKit and dependencies
-RUN pipx install torch torchaudio --include-deps --index-url https://download.pytorch.org/whl/cu121
-RUN pipx install git+https://github.com/QuentinFuxa/WhisperLiveKit.git
+# Create Python virtual environment and install WhisperLiveKit
+RUN python3 -m venv /opt/whisperlivekit-venv
+RUN /opt/whisperlivekit-venv/bin/pip install --upgrade pip
+RUN /opt/whisperlivekit-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN /opt/whisperlivekit-venv/bin/pip install git+https://github.com/QuentinFuxa/WhisperLiveKit.git
 
 # Build nginx with RTMP module
 WORKDIR /tmp
