@@ -26,6 +26,11 @@ RUN apt-get update && apt-get install -y \
 	python3 \
 	python3-pip \
 	python3-dev \
+	portaudio19-dev \
+	libasound2-dev \
+	libsndfile1-dev \
+	pulseaudio \
+	alsa-utils \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install Go
