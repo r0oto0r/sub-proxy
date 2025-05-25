@@ -424,6 +424,14 @@ func (as *AudioStreamer) Stop() {
 }
 
 func main() {
+	// Configure logging for better output in Docker/NGINX context
+	log.SetOutput(os.Stdout)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	// Force unbuffered output for immediate log visibility
+	os.Stdout.Sync()
+	os.Stderr.Sync()
+
 	if len(os.Args) < 2 {
 		log.Fatal("Usage: audio-streamer <stream_name>")
 	}
@@ -431,7 +439,10 @@ func main() {
 	streamName := os.Args[1]
 	whisperURL := "localhost:8000" // WhisperLiveKit default port
 
+	log.Printf("=== AUDIO STREAMER STARTING ===")
 	log.Printf("Starting audio streamer for stream: %s", streamName)
+	log.Printf("Whisper URL: %s", whisperURL)
+	log.Printf("Process PID: %d", os.Getpid())
 	log.Printf("YouTube forwarding will be handled by nginx with 10 second buffer")
 
 	// Create transcript processor
@@ -445,14 +456,19 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start the streamer
+	log.Printf("=== INITIALIZING AUDIO STREAMER ===")
 	if err := streamer.Start(); err != nil {
 		log.Fatalf("Failed to start audio streamer: %v", err)
 	}
 
+	log.Printf("=== AUDIO STREAMER RUNNING ===")
+	log.Printf("Waiting for shutdown signal...")
+
 	// Wait for shutdown signal
 	<-sigCh
+	log.Printf("=== SHUTDOWN INITIATED ===")
 	log.Printf("Received shutdown signal, stopping...")
 
 	streamer.Stop()
-	log.Printf("Audio streamer stopped")
+	log.Printf("=== AUDIO STREAMER STOPPED ===")
 }
