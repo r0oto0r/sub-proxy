@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -27,6 +28,8 @@ type AudioStreamer struct {
 	audioBuffer  chan []byte
 	chunkSize    int
 	sampleRate   int
+	youtubeKey   string
+	youtubeCmd   *exec.Cmd
 }
 
 func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProcessor) *AudioStreamer {
@@ -39,8 +42,9 @@ func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProces
 		ctx:         ctx,
 		cancel:      cancel,
 		audioBuffer: make(chan []byte, 100),
-		chunkSize:   1024,  // 1KB chunks
-		sampleRate:  16000, // 16kHz for Whisper
+		chunkSize:   1024,       // 1KB chunks
+		sampleRate:  16000,      // 16kHz for Whisper
+		youtubeKey:  streamName, // Use stream name as YouTube key
 	}
 }
 
@@ -61,6 +65,9 @@ func (as *AudioStreamer) Start() error {
 	go as.readAudioFromFFmpeg()
 	go as.sendAudioToWhisper()
 	go as.receiveTranscriptions()
+
+	// Start YouTube forwarding after 5 seconds
+	go as.startYouTubeForwarding()
 
 	return nil
 }
@@ -205,6 +212,63 @@ func (as *AudioStreamer) receiveTranscriptions() {
 	}
 }
 
+func (as *AudioStreamer) startYouTubeForwarding() {
+	// Wait 5 seconds before starting YouTube forwarding
+	log.Printf("Waiting 5 seconds before starting YouTube forwarding for stream: %s", as.streamName)
+	time.Sleep(5 * time.Second)
+
+	rtmpInputURL := fmt.Sprintf("rtmp://localhost:1935/live/%s", as.streamName)
+	youtubeRTMPURL := fmt.Sprintf("rtmp://a.rtmp.youtube.com/live2/%s", as.youtubeKey)
+
+	log.Printf("Starting YouTube forwarding from %s to %s", rtmpInputURL, youtubeRTMPURL)
+
+	// FFmpeg command to forward stream to YouTube
+	args := []string{
+		"-i", rtmpInputURL,
+		"-c", "copy", // Copy streams without re-encoding
+		"-f", "flv", // Output format for RTMP
+		youtubeRTMPURL,
+	}
+
+	as.youtubeCmd = exec.CommandContext(as.ctx, "ffmpeg", args...)
+
+	// Capture stderr for logging
+	stderr, err := as.youtubeCmd.StderrPipe()
+	if err != nil {
+		log.Printf("Error creating stderr pipe for YouTube FFmpeg: %v", err)
+		return
+	}
+
+	// Log FFmpeg errors for YouTube stream
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stderr.Read(buf)
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("YouTube FFmpeg stderr error: %v", err)
+				}
+				return
+			}
+			log.Printf("YouTube FFmpeg: %s", string(buf[:n]))
+		}
+	}()
+
+	if err := as.youtubeCmd.Start(); err != nil {
+		log.Printf("Failed to start YouTube FFmpeg: %v", err)
+		return
+	}
+
+	log.Printf("YouTube forwarding started for stream: %s", as.streamName)
+
+	// Wait for the command to finish
+	if err := as.youtubeCmd.Wait(); err != nil {
+		log.Printf("YouTube FFmpeg finished with error: %v", err)
+	} else {
+		log.Printf("YouTube FFmpeg finished successfully for stream: %s", as.streamName)
+	}
+}
+
 func (as *AudioStreamer) Stop() {
 	log.Printf("Stopping audio streamer for stream: %s", as.streamName)
 
@@ -212,6 +276,11 @@ func (as *AudioStreamer) Stop() {
 
 	if as.ffmpegCmd != nil && as.ffmpegCmd.Process != nil {
 		as.ffmpegCmd.Process.Kill()
+	}
+
+	if as.youtubeCmd != nil && as.youtubeCmd.Process != nil {
+		log.Printf("Stopping YouTube forwarding for stream: %s", as.streamName)
+		as.youtubeCmd.Process.Kill()
 	}
 
 	if as.conn != nil {
@@ -228,6 +297,7 @@ func main() {
 	whisperURL := "localhost:8000" // WhisperLiveKit default port
 
 	log.Printf("Starting audio streamer for stream: %s", streamName)
+	log.Printf("Will forward to YouTube after 5 seconds using stream name as key")
 
 	// Create transcript processor
 	processor := NewTranscriptProcessor()
