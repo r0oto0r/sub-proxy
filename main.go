@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -117,6 +118,7 @@ func (as *AudioStreamer) startFFmpeg() error {
 	rtmpURL := fmt.Sprintf("rtmp://localhost:1935/live/%s", as.streamName)
 
 	// FFmpeg command to extract audio and convert to webm format for WhisperLiveKit
+	// Create short duration WebM chunks similar to MediaRecorder
 	args := []string{
 		"-i", rtmpURL,
 		"-vn",                // No video
@@ -124,6 +126,7 @@ func (as *AudioStreamer) startFFmpeg() error {
 		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate
 		"-ac", "1", // Mono
 		"-f", "webm", // WebM container format
+		"-dash", "1", // Enable DASH mode for better chunking
 		"-", // Output to stdout
 	}
 
@@ -203,14 +206,27 @@ func (as *AudioStreamer) startFFmpegWithRestart() {
 	}
 }
 
+func (as *AudioStreamer) sendStopSignal() {
+	if as.conn != nil {
+		// Send empty message as stop signal (like the browser client does)
+		log.Printf("Sending stop signal to WhisperLiveKit")
+		if err := as.conn.WriteMessage(websocket.BinaryMessage, []byte{}); err != nil {
+			log.Printf("Error sending stop signal: %v", err)
+		}
+	}
+}
+
 func (as *AudioStreamer) readAudioFromFFmpeg() {
 	defer close(as.audioBuffer)
 
-	buffer := make([]byte, as.chunkSize) // WebM chunks can vary in size
+	// Use larger buffer for WebM chunks
+	buffer := make([]byte, 16384) // 16KB buffer for WebM chunks
 
 	for {
 		select {
 		case <-as.ctx.Done():
+			// Send stop signal to WhisperLiveKit before closing
+			go as.sendStopSignal()
 			return
 		default:
 			if as.ffmpegStdout == nil {
@@ -237,6 +253,8 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 				select {
 				case as.audioBuffer <- chunk:
 				case <-as.ctx.Done():
+					// Send stop signal before exiting
+					go as.sendStopSignal()
 					return
 				default:
 					// Buffer full, skip this chunk
@@ -251,9 +269,13 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 	for {
 		select {
 		case <-as.ctx.Done():
+			// Send stop signal when context is cancelled
+			as.sendStopSignal()
 			return
 		case audioChunk, ok := <-as.audioBuffer:
 			if !ok {
+				// Channel closed, send stop signal
+				as.sendStopSignal()
 				return
 			}
 
@@ -289,6 +311,15 @@ func (as *AudioStreamer) receiveTranscriptions() error {
 
 			// Log the raw message for debugging
 			log.Printf("[%s] Raw WebSocket message: %s", as.streamName, transcript)
+
+			// Check for special server messages
+			var response map[string]interface{}
+			if err := json.Unmarshal(message, &response); err == nil {
+				if msgType, ok := response["type"].(string); ok && msgType == "ready_to_stop" {
+					log.Printf("[%s] Received ready_to_stop signal from WhisperLiveKit", as.streamName)
+					return nil // Exit gracefully
+				}
+			}
 
 			// Process transcript in a separate goroutine to avoid blocking
 			go func() {
@@ -348,6 +379,9 @@ func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 func (as *AudioStreamer) Stop() {
 	log.Printf("Stopping audio streamer for stream: %s", as.streamName)
 
+	// Send stop signal before closing
+	as.sendStopSignal()
+
 	as.cancel()
 
 	if as.ffmpegCmd != nil && as.ffmpegCmd.Process != nil {
@@ -355,6 +389,8 @@ func (as *AudioStreamer) Stop() {
 	}
 
 	if as.conn != nil {
+		// Give a moment for the stop signal to be sent
+		time.Sleep(100 * time.Millisecond)
 		as.conn.Close()
 	}
 }
