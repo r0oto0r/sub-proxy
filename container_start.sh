@@ -4,7 +4,7 @@ set -e
 
 echo "Starting sub-proxy container..."
 
-echo "$HUGGINGFACE_TOKEN" | huggingface-cli login --token
+huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 echo "Starting WhisperLiveKit server in background..."
 whisperlivekit-server \
