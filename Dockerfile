@@ -37,6 +37,8 @@ RUN wget https://go.dev/dl/go1.22.2.linux-amd64.tar.gz \
 RUN python3 -m venv /opt/whisperlivekit-venv
 RUN /opt/whisperlivekit-venv/bin/pip install --upgrade pip
 RUN /opt/whisperlivekit-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN /opt/whisperlivekit-venv/bin/pip install mosestokenizer wtpsplit
+RUN /opt/whisperlivekit-venv/bin/pip install diart
 RUN /opt/whisperlivekit-venv/bin/pip install whisperlivekit
 
 # Build nginx with RTMP module
