@@ -124,7 +124,7 @@ COPY *.go ./
 RUN go mod download
 
 # Build Go application
-RUN go build -o audio-streamer .
+RUN go build -o sub-proxy .
 
 # Copy container startup script
 COPY container_start.sh /app/container_start.sh
