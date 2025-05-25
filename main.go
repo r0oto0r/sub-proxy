@@ -17,44 +17,39 @@ import (
 
 // AudioStreamer handles audio streaming to WhisperLiveKit
 type AudioStreamer struct {
-	streamName          string
-	whisperURL          string
-	conn                *websocket.Conn
-	processor           *TranscriptProcessor
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	ffmpegCmd           *exec.Cmd
-	ffmpegStdout        io.ReadCloser
-	audioBuffer         chan []byte
-	chunkSize           int
-	sampleRate          int
-	youtubeKey          string
-	youtubeCmd          *exec.Cmd
-	ffmpegRestartCount  int
-	youtubeRestartCount int
-	transcriptErrors    int
-	maxRestarts         int
-	restartDelay        time.Duration
+	streamName         string
+	whisperURL         string
+	conn               *websocket.Conn
+	processor          *TranscriptProcessor
+	ctx                context.Context
+	cancel             context.CancelFunc
+	ffmpegCmd          *exec.Cmd
+	ffmpegStdout       io.ReadCloser
+	audioBuffer        chan []byte
+	chunkSize          int
+	sampleRate         int
+	ffmpegRestartCount int
+	transcriptErrors   int
+	maxRestarts        int
+	restartDelay       time.Duration
 }
 
 func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProcessor) *AudioStreamer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &AudioStreamer{
-		streamName:          streamName,
-		whisperURL:          whisperURL,
-		processor:           processor,
-		ctx:                 ctx,
-		cancel:              cancel,
-		audioBuffer:         make(chan []byte, 100),
-		chunkSize:           1024,       // 1KB chunks
-		sampleRate:          16000,      // 16kHz for Whisper
-		youtubeKey:          streamName, // Use stream name as YouTube key
-		ffmpegRestartCount:  0,
-		youtubeRestartCount: 0,
-		transcriptErrors:    0,
-		maxRestarts:         10, // Maximum restarts before giving up
-		restartDelay:        2 * time.Second,
+		streamName:         streamName,
+		whisperURL:         whisperURL,
+		processor:          processor,
+		ctx:                ctx,
+		cancel:             cancel,
+		audioBuffer:        make(chan []byte, 100),
+		chunkSize:          1024,  // 1KB chunks
+		sampleRate:         16000, // 16kHz for Whisper
+		ffmpegRestartCount: 0,
+		transcriptErrors:   0,
+		maxRestarts:        10, // Maximum restarts before giving up
+		restartDelay:       2 * time.Second,
 	}
 }
 
@@ -73,9 +68,6 @@ func (as *AudioStreamer) Start() error {
 	go as.readAudioFromFFmpeg()
 	go as.sendAudioToWhisper()
 	go as.receiveTranscriptionsWithRetry()
-
-	// Start YouTube forwarding after 5 seconds with auto-restart
-	go as.startYouTubeForwardingWithRestart()
 
 	return nil
 }
@@ -339,93 +331,6 @@ func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 	}
 }
 
-func (as *AudioStreamer) startYouTubeForwarding() error {
-	rtmpInputURL := fmt.Sprintf("rtmp://localhost:1935/live/%s", as.streamName)
-	youtubeRTMPURL := fmt.Sprintf("rtmp://a.rtmp.youtube.com/live2/%s", as.youtubeKey)
-
-	log.Printf("Starting YouTube forwarding from %s to %s", rtmpInputURL, youtubeRTMPURL)
-
-	// FFmpeg command to forward stream to YouTube
-	args := []string{
-		"-i", rtmpInputURL,
-		"-c", "copy", // Copy streams without re-encoding
-		"-f", "flv", // Output format for RTMP
-		youtubeRTMPURL,
-	}
-
-	as.youtubeCmd = exec.CommandContext(as.ctx, "ffmpeg", args...)
-
-	// Capture stderr for logging
-	stderr, err := as.youtubeCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("error creating stderr pipe for YouTube FFmpeg: %v", err)
-	}
-
-	// Log FFmpeg errors for YouTube stream
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := stderr.Read(buf)
-			if err != nil {
-				if err != io.EOF {
-					log.Printf("YouTube FFmpeg stderr error: %v", err)
-				}
-				return
-			}
-			log.Printf("YouTube FFmpeg: %s", string(buf[:n]))
-		}
-	}()
-
-	if err := as.youtubeCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start YouTube FFmpeg: %v", err)
-	}
-
-	log.Printf("YouTube forwarding started for stream: %s", as.streamName)
-	return nil
-}
-
-func (as *AudioStreamer) startYouTubeForwardingWithRestart() {
-	// Wait 5 seconds before starting YouTube forwarding
-	log.Printf("Waiting 5 seconds before starting YouTube forwarding for stream: %s", as.streamName)
-	time.Sleep(5 * time.Second)
-
-	for {
-		select {
-		case <-as.ctx.Done():
-			return
-		default:
-			if as.youtubeRestartCount >= as.maxRestarts {
-				log.Printf("YouTube forwarding failed too many times (%d), giving up", as.youtubeRestartCount)
-				return
-			}
-
-			log.Printf("Starting YouTube forwarding (attempt %d)", as.youtubeRestartCount+1)
-			if err := as.startYouTubeForwarding(); err != nil {
-				log.Printf("Failed to start YouTube forwarding: %v", err)
-				as.youtubeRestartCount++
-				time.Sleep(as.restartDelay)
-				continue
-			}
-
-			// Wait for YouTube forwarding to finish or fail
-			if as.youtubeCmd != nil {
-				err := as.youtubeCmd.Wait()
-				if err != nil {
-					log.Printf("YouTube forwarding exited with error: %v, restarting...", err)
-					as.youtubeRestartCount++
-					time.Sleep(as.restartDelay)
-					continue
-				}
-			}
-
-			// If we get here, YouTube forwarding exited cleanly
-			log.Printf("YouTube forwarding exited unexpectedly, restarting...")
-			as.youtubeRestartCount++
-			time.Sleep(as.restartDelay)
-		}
-	}
-}
-
 func (as *AudioStreamer) Stop() {
 	log.Printf("Stopping audio streamer for stream: %s", as.streamName)
 
@@ -433,11 +338,6 @@ func (as *AudioStreamer) Stop() {
 
 	if as.ffmpegCmd != nil && as.ffmpegCmd.Process != nil {
 		as.ffmpegCmd.Process.Kill()
-	}
-
-	if as.youtubeCmd != nil && as.youtubeCmd.Process != nil {
-		log.Printf("Stopping YouTube forwarding for stream: %s", as.streamName)
-		as.youtubeCmd.Process.Kill()
 	}
 
 	if as.conn != nil {
@@ -454,7 +354,7 @@ func main() {
 	whisperURL := "localhost:8000" // WhisperLiveKit default port
 
 	log.Printf("Starting audio streamer for stream: %s", streamName)
-	log.Printf("Will forward to YouTube after 5 seconds using stream name as key")
+	log.Printf("YouTube forwarding will be handled by nginx with 10 second buffer")
 
 	// Create transcript processor
 	processor := NewTranscriptProcessor()
