@@ -1,5 +1,5 @@
-# Use CUDA 12.9 image
-FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
+# Use CUDA 12.8 image (matching WhisperLiveKit official)
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 # Set environment variables
 ENV NGINX_VERSION=1.26.0
@@ -40,7 +40,7 @@ RUN wget https://go.dev/dl/go1.22.2.linux-amd64.tar.gz \
 
 # install WhisperLiveKit
 RUN pip install --upgrade pip
-RUN pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 RUN pip install mosestokenizer wtpsplit
 RUN pip install diart
 RUN pip install whisperlivekit
