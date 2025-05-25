@@ -27,7 +27,7 @@ type AudioStreamer struct {
 	ffmpegCmd          *exec.Cmd
 	ffmpegStdout       io.ReadCloser
 	audioBuffer        chan []byte
-	chunkSize          int
+	chunkDuration      time.Duration // Duration of each audio chunk (like browser)
 	sampleRate         int
 	ffmpegRestartCount int
 	transcriptErrors   int
@@ -45,8 +45,8 @@ func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProces
 		ctx:                ctx,
 		cancel:             cancel,
 		audioBuffer:        make(chan []byte, 100),
-		chunkSize:          4096,  // 4KB chunks for WebM
-		sampleRate:         16000, // 16kHz for Whisper
+		chunkDuration:      1 * time.Second, // 1 second chunks like browser default
+		sampleRate:         16000,           // 16kHz for Whisper
 		ffmpegRestartCount: 0,
 		transcriptErrors:   0,
 		maxRestarts:        10, // Maximum restarts before giving up
@@ -77,13 +77,16 @@ func (as *AudioStreamer) connectToWhisper() error {
 	u := url.URL{Scheme: "ws", Host: as.whisperURL, Path: "/asr"}
 	log.Printf("Connecting to WhisperLiveKit at %s", u.String())
 
-	// Set headers for WhisperLiveKit compatibility
+	// Set headers for WhisperLiveKit compatibility (match browser behavior)
 	headers := make(map[string][]string)
 	headers["User-Agent"] = []string{"SubProxy-AudioStreamer/1.0"}
+	headers["Sec-WebSocket-Protocol"] = []string{""}
 
 	// Create dialer with proper configuration
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
+	dialer.ReadBufferSize = 1024 * 64  // 64KB read buffer for WebM chunks
+	dialer.WriteBufferSize = 1024 * 64 // 64KB write buffer for WebM chunks
 
 	var err error
 	as.conn, _, err = dialer.Dial(u.String(), headers)
@@ -91,10 +94,14 @@ func (as *AudioStreamer) connectToWhisper() error {
 		return err
 	}
 
+	// Set WebSocket timeouts to match browser behavior
+	as.conn.SetReadDeadline(time.Time{})  // No read deadline (browser doesn't set one)
+	as.conn.SetWriteDeadline(time.Time{}) // No write deadline
+
 	log.Printf("Connected to WhisperLiveKit WebSocket")
 
-	// Send initial configuration if needed
-	// WhisperLiveKit might expect certain initialization parameters
+	// Note: WhisperLiveKit doesn't require initial configuration like some other services
+	// The browser client just starts sending audio data immediately
 	return nil
 }
 
@@ -118,15 +125,17 @@ func (as *AudioStreamer) startFFmpeg() error {
 	rtmpURL := fmt.Sprintf("rtmp://localhost:1935/live/%s", as.streamName)
 
 	// FFmpeg command to extract audio and convert to webm format for WhisperLiveKit
-	// Create short duration WebM chunks similar to MediaRecorder
+	// Use a simpler approach that creates properly chunked WebM output
 	args := []string{
 		"-i", rtmpURL,
 		"-vn",                // No video
-		"-acodec", "libopus", // Opus codec (preferred by WhisperLiveKit)
-		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate
-		"-ac", "1", // Mono
-		"-f", "webm", // WebM container format
-		"-dash", "1", // Enable DASH mode for better chunking
+		"-acodec", "libopus", // Opus codec (same as browser MediaRecorder)
+		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate (16kHz)
+		"-ac", "1", // Mono audio
+		"-b:a", "128k", // Audio bitrate
+		"-f", "webm", // WebM container
+		"-cluster_size_limit", "2M", // Limit cluster size for better chunking
+		"-cluster_time_limit", "1000", // 1 second clusters (like browser default)
 		"-", // Output to stdout
 	}
 
@@ -219,12 +228,24 @@ func (as *AudioStreamer) sendStopSignal() {
 func (as *AudioStreamer) readAudioFromFFmpeg() {
 	defer close(as.audioBuffer)
 
-	// Use larger buffer for WebM chunks
-	buffer := make([]byte, 16384) // 16KB buffer for WebM chunks
+	// Buffer to accumulate WebM data
+	var webmBuffer []byte
+	buffer := make([]byte, 4096) // Smaller read buffer
+	lastSendTime := time.Now()
+	sendInterval := as.chunkDuration // Use configured chunk duration
 
 	for {
 		select {
 		case <-as.ctx.Done():
+			// Send any remaining data before stopping
+			if len(webmBuffer) > 0 {
+				chunk := make([]byte, len(webmBuffer))
+				copy(chunk, webmBuffer)
+				select {
+				case as.audioBuffer <- chunk:
+				default:
+				}
+			}
 			// Send stop signal to WhisperLiveKit before closing
 			go as.sendStopSignal()
 			return
@@ -235,30 +256,76 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 				continue
 			}
 
+			// Set read timeout to avoid blocking indefinitely
+			if conn, ok := as.ffmpegStdout.(*os.File); ok {
+				conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			}
+
 			n, err := as.ffmpegStdout.Read(buffer)
 			if err != nil {
-				if err != io.EOF {
+				if err != io.EOF && !os.IsTimeout(err) {
 					log.Printf("Error reading from FFmpeg: %v", err)
 				}
-				// Wait a bit before trying again (FFmpeg might be restarting)
-				time.Sleep(100 * time.Millisecond)
+				// Check if it's time to send accumulated data
+				if time.Since(lastSendTime) >= sendInterval && len(webmBuffer) > 0 {
+					chunk := make([]byte, len(webmBuffer))
+					copy(chunk, webmBuffer)
+					select {
+					case as.audioBuffer <- chunk:
+						webmBuffer = webmBuffer[:0] // Reset buffer
+						lastSendTime = time.Now()
+					case <-as.ctx.Done():
+						go as.sendStopSignal()
+						return
+					default:
+						// Buffer full, skip
+					}
+				}
+				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 
 			if n > 0 {
-				// Send audio chunk to buffer
-				chunk := make([]byte, n)
-				copy(chunk, buffer[:n])
+				// Accumulate WebM data
+				webmBuffer = append(webmBuffer, buffer[:n]...)
 
-				select {
-				case as.audioBuffer <- chunk:
-				case <-as.ctx.Done():
-					// Send stop signal before exiting
-					go as.sendStopSignal()
-					return
-				default:
-					// Buffer full, skip this chunk
-					log.Printf("Audio buffer full, skipping chunk")
+				// Send chunk when we have enough data OR enough time has passed
+				// This mimics how browser MediaRecorder works
+				if time.Since(lastSendTime) >= sendInterval && len(webmBuffer) > 0 {
+					chunk := make([]byte, len(webmBuffer))
+					copy(chunk, webmBuffer)
+
+					select {
+					case as.audioBuffer <- chunk:
+						webmBuffer = webmBuffer[:0] // Reset buffer
+						lastSendTime = time.Now()
+					case <-as.ctx.Done():
+						go as.sendStopSignal()
+						return
+					default:
+						// Buffer full, skip this chunk
+						log.Printf("Audio buffer full, skipping chunk")
+					}
+				}
+
+				// Also limit buffer size to prevent unbounded growth
+				if len(webmBuffer) > 256*1024 { // 256KB max buffer
+					log.Printf("WebM buffer too large (%d bytes), forcing send", len(webmBuffer))
+					chunk := make([]byte, len(webmBuffer))
+					copy(chunk, webmBuffer)
+
+					select {
+					case as.audioBuffer <- chunk:
+						webmBuffer = webmBuffer[:0] // Reset buffer
+						lastSendTime = time.Now()
+					case <-as.ctx.Done():
+						go as.sendStopSignal()
+						return
+					default:
+						// Buffer full, reset anyway to prevent memory issues
+						webmBuffer = webmBuffer[:0]
+						log.Printf("Forced buffer reset due to full channel")
+					}
 				}
 			}
 		}
@@ -266,6 +333,7 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 }
 
 func (as *AudioStreamer) sendAudioToWhisper() {
+	chunkCount := 0
 	for {
 		select {
 		case <-as.ctx.Done():
@@ -285,7 +353,14 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 				continue
 			}
 
-			// Send raw audio bytes to WhisperLiveKit
+			chunkCount++
+
+			// Log chunk info periodically (every 10th chunk to avoid spam)
+			if chunkCount%10 == 1 {
+				log.Printf("Sending WebM chunk #%d (size: %d bytes) to WhisperLiveKit", chunkCount, len(audioChunk))
+			}
+
+			// Send raw WebM bytes to WhisperLiveKit (same as browser)
 			if err := as.conn.WriteMessage(websocket.BinaryMessage, audioChunk); err != nil {
 				log.Printf("Error sending audio to WhisperLiveKit: %v", err)
 				// Don't return here, let the connection retry logic handle it
@@ -296,6 +371,7 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 }
 
 func (as *AudioStreamer) receiveTranscriptions() error {
+	messageCount := 0
 	for {
 		select {
 		case <-as.ctx.Done():
@@ -306,10 +382,13 @@ func (as *AudioStreamer) receiveTranscriptions() error {
 				return fmt.Errorf("error reading from WhisperLiveKit: %v", err)
 			}
 
+			messageCount++
+
 			// Process the transcription response (JSON format)
 			transcript := string(message)
 
-			// Log the raw message for debugging
+			// Log detailed message info for debugging
+			log.Printf("[%s] Message #%d from WhisperLiveKit (length: %d bytes)", as.streamName, messageCount, len(message))
 			log.Printf("[%s] Raw WebSocket message: %s", as.streamName, transcript)
 
 			// Check for special server messages
@@ -319,6 +398,16 @@ func (as *AudioStreamer) receiveTranscriptions() error {
 					log.Printf("[%s] Received ready_to_stop signal from WhisperLiveKit", as.streamName)
 					return nil // Exit gracefully
 				}
+
+				// Log message structure for debugging
+				if msgType, ok := response["type"].(string); ok {
+					log.Printf("[%s] Message type: %s", as.streamName, msgType)
+				}
+				if lines, ok := response["lines"].([]interface{}); ok {
+					log.Printf("[%s] Lines count: %d", as.streamName, len(lines))
+				}
+			} else {
+				log.Printf("[%s] Failed to parse JSON response: %v", as.streamName, err)
 			}
 
 			// Process transcript in a separate goroutine to avoid blocking
