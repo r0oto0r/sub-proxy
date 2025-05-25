@@ -5,8 +5,8 @@ services:
     ports:
       - "8080:80"
       - "1935:1935"
-    volumes:
-      - ./models:/app/models
+      - "8000:8000"  # WhisperLiveKit port
     environment:
-      - WHISPER_MODEL_PATH=/app/models/ggml-large-v3-turbo.bin
+      - NVIDIA_VISIBLE_DEVICES=all
+    runtime: nvidia
     restart: unless-stopped

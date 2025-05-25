@@ -1,16 +1,19 @@
-# Use Debian Linux base image
-FROM debian:latest
+# Use CUDA 12.9 base image
+FROM nvidia/cuda:12.9.0-base-ubuntu24.04
 
 # Set environment variables
 ENV NGINX_VERSION=1.26.0
-ENV RTMP_MODULE_VERSION=1.2.2
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
 	git \
 	curl \
+	wget \
 	build-essential \
 	cmake \
+	pipx \
 	pkg-config \
 	libssl-dev \
 	zlib1g-dev \
@@ -20,29 +23,19 @@ RUN apt-get update && apt-get install -y \
 	libgd-dev \
 	libgeoip-dev \
 	ffmpeg \
-	gstreamer1.0-tools \
-	gstreamer1.0-plugins-base \
-	gstreamer1.0-plugins-good \
-	gstreamer1.0-plugins-bad \
-	gstreamer1.0-plugins-ugly \
-	gstreamer1.0-libav \
-	libgstreamer1.0-dev \
-	libgstreamer-plugins-base1.0-dev \
-	libglib2.0-dev \
-	libcairo2-dev \
-	libpango1.0-dev \
-	clang \
-	libclang-dev \
-	llvm-dev \
+	python3 \
+	python3-pip \
+	python3-dev \
 	&& rm -rf /var/lib/apt/lists/*
 
-# Install Rust (using rustup)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-	&& . $HOME/.cargo/env \
-	&& rustup default stable \
-	&& rustup update
+# Install Go
+RUN wget https://go.dev/dl/go1.22.2.linux-amd64.tar.gz \
+	&& tar -C /usr/local -xzf go1.22.2.linux-amd64.tar.gz \
+	&& rm go1.22.2.linux-amd64.tar.gz
 
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Install WhisperLiveKit and dependencies
+RUN pipx install torch torchaudio --include-deps --index-url https://download.pytorch.org/whl/cu121
+RUN pipx install git+https://github.com/QuentinFuxa/WhisperLiveKit.git
 
 # Build nginx with RTMP module
 WORKDIR /tmp
@@ -102,25 +95,6 @@ RUN mkdir -p /var/cache/nginx \
 	&& mkdir -p /var/log/nginx \
 	&& mkdir -p /usr/share/nginx/html
 
-RUN cargo install cargo-c
-
-# Build and install gst-whisper
-WORKDIR /tmp
-
-# Check if whisper module is available in GStreamer
-RUN gst-inspect-1.0 whisper || echo "Whisper module not found, will install gst-whisper"
-
-RUN git clone https://github.com/avstack/gst-whisper.git \
-	&& cd gst-whisper \
-	&& cargo cbuild --release \
-	&& cargo cinstall --release --prefix=/usr/local
-
-# Set GST_PLUGIN_PATH to include gst-whisper
-ENV GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/local/lib/x86_64-linux-gnu/gstreamer-1.0
-
-# Check if whisper module is available in GStreamer
-RUN gst-inspect-1.0 whisper || echo "Whisper module not found, will install gst-whisper"
-
 # Copy nginx configuration and HTML files
 COPY nginx.conf /etc/nginx/nginx.conf
 RUN mkdir -p /usr/share/nginx/html
@@ -133,20 +107,22 @@ RUN rm -rf /tmp/*
 # Create a working directory for the application
 WORKDIR /app
 
-# Copy and make stream processing script executable
-COPY process_stream.sh /app/process_stream.sh
-RUN chmod +x /app/process_stream.sh
+# Copy Go application files
+COPY go.mod go.sum* ./
+COPY *.go ./
+
+# Download Go dependencies
+RUN go mod download
+
+# Build Go application
+RUN go build -o audio-streamer .
 
 # Copy container startup script
 COPY container_start.sh /app/container_start.sh
 RUN chmod +x /app/container_start.sh
 
-# Copy download models script
-COPY download_models.sh /app/download_models.sh
-RUN chmod +x /app/download_models.sh
-
 # Expose ports
-EXPOSE 80 1935
+EXPOSE 80 1935 8000
 
 # Default command - run startup script
 CMD ["/app/container_start.sh"]
