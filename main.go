@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -283,6 +284,16 @@ func (as *AudioStreamer) startFFmpegWithRestart() {
 			}
 
 			log.Printf("Starting FFmpeg (attempt %d)", as.ffmpegRestartCount+1)
+
+			// Clean up old FFmpeg process and stdout reference before starting new one
+			if as.ffmpegCmd != nil && as.ffmpegCmd.Process != nil {
+				as.ffmpegCmd.Process.Kill()
+			}
+			if as.ffmpegStdout != nil {
+				as.ffmpegStdout.Close()
+				as.ffmpegStdout = nil
+			}
+
 			if err := as.startFFmpeg(); err != nil {
 				log.Printf("Failed to start FFmpeg: %v", err)
 				as.ffmpegRestartCount++
@@ -295,6 +306,11 @@ func (as *AudioStreamer) startFFmpegWithRestart() {
 				err := as.ffmpegCmd.Wait()
 				if err != nil {
 					log.Printf("FFmpeg exited with error: %v, restarting...", err)
+					// Clean up stdout reference when FFmpeg fails
+					if as.ffmpegStdout != nil {
+						as.ffmpegStdout.Close()
+						as.ffmpegStdout = nil
+					}
 					as.ffmpegRestartCount++
 					time.Sleep(as.restartDelay)
 					continue
@@ -303,6 +319,11 @@ func (as *AudioStreamer) startFFmpegWithRestart() {
 
 			// If we get here, FFmpeg exited cleanly, which shouldn't happen in normal operation
 			log.Printf("FFmpeg exited unexpectedly, restarting...")
+			// Clean up stdout reference when FFmpeg exits unexpectedly
+			if as.ffmpegStdout != nil {
+				as.ffmpegStdout.Close()
+				as.ffmpegStdout = nil
+			}
 			as.ffmpegRestartCount++
 			time.Sleep(as.restartDelay)
 		}
@@ -345,11 +366,21 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 			n, err := as.ffmpegStdout.Read(buffer)
 			if err != nil {
 				if err != io.EOF {
+					// Check if this is a "file already closed" error or similar pipe closure
+					if strings.Contains(err.Error(), "file already closed") ||
+						strings.Contains(err.Error(), "broken pipe") ||
+						strings.Contains(err.Error(), "use of closed") {
+						log.Printf("[%s] readAudioFromFFmpeg: FFmpeg pipe closed, clearing stdout reference", as.streamName)
+						as.ffmpegStdout = nil
+						time.Sleep(100 * time.Millisecond)
+						continue
+					}
 					log.Printf("[%s] readAudioFromFFmpeg: Error reading from FFmpeg: %v", as.streamName, err)
 				} else {
 					log.Printf("[%s] readAudioFromFFmpeg: FFmpeg stdout EOF", as.streamName)
 				}
-				// Wait a bit before trying again (FFmpeg might be restarting)
+				// Clear the stdout reference and wait for restart
+				as.ffmpegStdout = nil
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -508,6 +539,12 @@ func (as *AudioStreamer) Stop() {
 
 	if as.ffmpegCmd != nil && as.ffmpegCmd.Process != nil {
 		as.ffmpegCmd.Process.Kill()
+	}
+
+	// Clean up stdout reference
+	if as.ffmpegStdout != nil {
+		as.ffmpegStdout.Close()
+		as.ffmpegStdout = nil
 	}
 
 	if as.conn != nil {
