@@ -1,4 +1,4 @@
-module audio-streamer
+module sub-proxy
 
 go 1.22
 

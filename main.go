@@ -6,15 +6,109 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// StreamManager manages active streams
+type StreamManager struct {
+	streams map[string]*AudioStreamer
+	mutex   sync.RWMutex
+}
+
+func NewStreamManager() *StreamManager {
+	return &StreamManager{
+		streams: make(map[string]*AudioStreamer),
+	}
+}
+
+func (sm *StreamManager) StartStream(streamName string) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
+	if _, exists := sm.streams[streamName]; exists {
+		return fmt.Errorf("stream %s already running", streamName)
+	}
+
+	whisperURL := "localhost:8000"
+	processor := NewTranscriptProcessor()
+	streamer := NewAudioStreamer(streamName, whisperURL, processor)
+
+	if err := streamer.Start(); err != nil {
+		return fmt.Errorf("failed to start stream %s: %v", streamName, err)
+	}
+
+	sm.streams[streamName] = streamer
+	log.Printf("Started transcription for stream: %s", streamName)
+	return nil
+}
+
+func (sm *StreamManager) StopStream(streamName string) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
+	streamer, exists := sm.streams[streamName]
+	if !exists {
+		return fmt.Errorf("stream %s not found", streamName)
+	}
+
+	streamer.Stop()
+	delete(sm.streams, streamName)
+	log.Printf("Stopped transcription for stream: %s", streamName)
+	return nil
+}
+
+// HTTP handlers
+func (sm *StreamManager) handlePublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	streamName := r.FormValue("name")
+	if streamName == "" {
+		http.Error(w, "Missing stream name", http.StatusBadRequest)
+		return
+	}
+
+	if err := sm.StartStream(streamName); err != nil {
+		log.Printf("Error starting stream %s: %v", streamName, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Stream started"))
+}
+
+func (sm *StreamManager) handleDone(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	streamName := r.FormValue("name")
+	if streamName == "" {
+		http.Error(w, "Missing stream name", http.StatusBadRequest)
+		return
+	}
+
+	if err := sm.StopStream(streamName); err != nil {
+		log.Printf("Error stopping stream %s: %v", streamName, err)
+		// Don't return error, stream might already be stopped
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Stream stopped"))
+}
 
 // AudioStreamer handles audio streaming to WhisperLiveKit
 type AudioStreamer struct {
@@ -424,35 +518,41 @@ func (as *AudioStreamer) Stop() {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("Usage: audio-streamer <stream_name>")
+	log.Printf("Starting Sub-Proxy HTTP server...")
+
+	streamManager := NewStreamManager()
+
+	// Setup HTTP routes
+	http.HandleFunc("/rtmp_publish", streamManager.handlePublish)
+	http.HandleFunc("/rtmp_done", streamManager.handleDone)
+
+	// Start HTTP server
+	server := &http.Server{
+		Addr:    ":9000",
+		Handler: nil,
 	}
 
-	streamName := os.Args[1]
-	whisperURL := "localhost:8000" // WhisperLiveKit default port
-
-	log.Printf("Starting audio streamer for stream: %s", streamName)
-	log.Printf("YouTube forwarding will be handled by nginx with 10 second buffer")
-
-	// Create transcript processor
-	processor := NewTranscriptProcessor()
-
-	// Create audio streamer
-	streamer := NewAudioStreamer(streamName, whisperURL, processor)
+	go func() {
+		log.Printf("HTTP server listening on :9000")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server failed: %v", err)
+		}
+	}()
 
 	// Handle shutdown gracefully
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start the streamer
-	if err := streamer.Start(); err != nil {
-		log.Fatalf("Failed to start audio streamer: %v", err)
-	}
-
 	// Wait for shutdown signal
 	<-sigCh
 	log.Printf("Received shutdown signal, stopping...")
 
-	streamer.Stop()
-	log.Printf("Audio streamer stopped")
+	// Shutdown HTTP server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	log.Printf("Sub-Proxy HTTP server stopped")
 }

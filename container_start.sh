@@ -18,5 +18,11 @@ whisperlivekit-server \
 		echo -e "\033[36m[WhisperLiveKit]\033[0m $line"
 	done &
 
+echo "Starting Go HTTP server in background..."
+/app/sub-proxy 2>&1 | \
+	while IFS= read -r line; do
+		echo -e "\033[32m[SubProxy]\033[0m $line"
+	done &
+
 echo "Starting nginx..."
 nginx -g "daemon off;"
