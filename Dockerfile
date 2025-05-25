@@ -1,5 +1,5 @@
-# Use CUDA 12.9 base image
-FROM nvidia/cuda:12.9.0-base-ubuntu24.04
+# Use CUDA 12.9 image
+FROM nvidia/cuda:12.9.0-devel-ubuntu24.04
 
 # Set environment variables
 ENV NGINX_VERSION=1.26.0
