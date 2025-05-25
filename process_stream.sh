@@ -30,11 +30,15 @@ gst-launch-1.0 -v \
     rtmpsrc location="${SOURCE_RTMP_URL}/${STREAM_NAME}" ! \
     flvdemux name=demux \
     demux.video ! queue ! h264parse ! avdec_h264 ! \
-    textoverlay name=overlay text="Test Subtitle" font-desc="${SUBTITLE_FONT}" valignment=bottom halignment=center ! \
+    textoverlay name=overlay font-desc="${SUBTITLE_FONT}" valignment=bottom halignment=center ! \
     videoconvert ! x264enc bitrate=${VIDEO_BITRATE} speed-preset=fast tune=zerolatency ! \
     h264parse ! flvmux name=mux streamable=true ! \
     rtmpsink location="${TARGET_RTMP_URL}/${STREAM_NAME}" \
-    demux.audio ! queue ! aacparse ! mux.
+    demux.audio ! queue ! aacparse ! avdec_aac ! audioconvert ! audioresample ! \
+    tee name=t \
+    t. ! queue ! whisper language="${WHISPER_LANGUAGE}" translate=${TRANSLATE_ENABLED} ! \
+    text/x-raw ! overlay.text_sink \
+    t. ! queue ! audioconvert ! avenc_aac bitrate=${AUDIO_BITRATE} ! queue ! mux.
 
 echo "Pipeline finished. Exit code: $?"
 
