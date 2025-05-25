@@ -113,21 +113,25 @@ func (sm *StreamManager) handleDone(w http.ResponseWriter, r *http.Request) {
 
 // AudioStreamer handles audio streaming to WhisperLiveKit
 type AudioStreamer struct {
-	streamName         string
-	whisperURL         string
-	conn               *websocket.Conn
-	processor          *TranscriptProcessor
-	ctx                context.Context
-	cancel             context.CancelFunc
-	ffmpegCmd          *exec.Cmd
-	ffmpegStdout       io.ReadCloser
-	audioBuffer        chan []byte
-	chunkSize          int
-	sampleRate         int
-	ffmpegRestartCount int
-	transcriptErrors   int
-	maxRestarts        int
-	restartDelay       time.Duration
+	streamName           string
+	whisperURL           string
+	conn                 *websocket.Conn
+	processor            *TranscriptProcessor
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	ffmpegCmd            *exec.Cmd
+	ffmpegStdout         io.ReadCloser
+	audioBuffer          chan []byte
+	chunkSize            int
+	sampleRate           int
+	ffmpegRestartCount   int
+	transcriptErrors     int
+	maxRestarts          int
+	restartDelay         time.Duration
+	isConnected          bool
+	connMutex            sync.Mutex
+	lastAudioTime        time.Time
+	audioTimeoutDuration time.Duration
 }
 
 func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProcessor) *AudioStreamer {
@@ -146,26 +150,56 @@ func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProces
 		transcriptErrors:   0,
 		maxRestarts:        10, // Maximum restarts before giving up
 		restartDelay:       2 * time.Second,
+		isConnected:        false,
 	}
 }
 
 func (as *AudioStreamer) Start() error {
 	log.Printf("Starting audio streamer for stream: %s", as.streamName)
 
-	// Connect to WhisperLiveKit WebSocket with retry
-	if err := as.connectToWhisperWithRetry(); err != nil {
-		return fmt.Errorf("failed to connect to WhisperLiveKit after retries: %v", err)
-	}
-
+	// Don't connect to WhisperLiveKit immediately - wait for audio data
 	// Start FFmpeg process to extract audio with auto-restart
 	go as.startFFmpegWithRestart()
 
 	// Start goroutines for processing
 	go as.readAudioFromFFmpeg()
 	go as.sendAudioToWhisper()
-	go as.receiveTranscriptionsWithRetry()
 
 	return nil
+}
+
+func (as *AudioStreamer) connectToWhisperIfNeeded() error {
+	as.connMutex.Lock()
+	defer as.connMutex.Unlock()
+
+	if as.isConnected && as.conn != nil {
+		return nil // Already connected
+	}
+
+	log.Printf("[%s] Connecting to WhisperLiveKit for the first time (stream is now active)", as.streamName)
+	if err := as.connectToWhisperWithRetry(); err != nil {
+		return fmt.Errorf("failed to connect to WhisperLiveKit: %v", err)
+	}
+
+	as.isConnected = true
+	// Start receiving transcriptions once connected
+	go as.receiveTranscriptionsWithRetry()
+	log.Printf("[%s] Successfully connected to WhisperLiveKit and started transcription service", as.streamName)
+	return nil
+}
+
+func (as *AudioStreamer) disconnectFromWhisper() {
+	as.connMutex.Lock()
+	defer as.connMutex.Unlock()
+
+	if as.conn != nil {
+		log.Printf("[%s] Disconnecting from WhisperLiveKit", as.streamName)
+		as.sendStopSignal()
+		time.Sleep(100 * time.Millisecond) // Give time for stop signal
+		as.conn.Close()
+		as.conn = nil
+	}
+	as.isConnected = false
 }
 
 func (as *AudioStreamer) connectToWhisper() error {
@@ -331,11 +365,14 @@ func (as *AudioStreamer) startFFmpegWithRestart() {
 }
 
 func (as *AudioStreamer) sendStopSignal() {
+	as.connMutex.Lock()
+	defer as.connMutex.Unlock()
+
 	if as.conn != nil {
 		// Send empty message as stop signal (like the browser client does)
-		log.Printf("Sending stop signal to WhisperLiveKit")
+		log.Printf("[%s] Sending stop signal to WhisperLiveKit", as.streamName)
 		if err := as.conn.WriteMessage(websocket.BinaryMessage, []byte{}); err != nil {
-			log.Printf("Error sending stop signal: %v", err)
+			log.Printf("[%s] Error sending stop signal: %v", as.streamName, err)
 		}
 	}
 }
@@ -417,18 +454,24 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 		case <-as.ctx.Done():
 			// Send stop signal when context is cancelled
 			log.Printf("[%s] sendAudioToWhisper: Context cancelled, sending stop signal", as.streamName)
-			as.sendStopSignal()
+			as.disconnectFromWhisper()
 			return
 		case audioChunk, ok := <-as.audioBuffer:
 			if !ok {
 				// Channel closed, send stop signal
 				log.Printf("[%s] sendAudioToWhisper: Audio buffer channel closed, sending stop signal", as.streamName)
-				as.sendStopSignal()
+				as.disconnectFromWhisper()
 				return
 			}
 
 			chunkCount++
 			log.Printf("[%s] sendAudioToWhisper: Received audio chunk #%d with %d bytes from buffer", as.streamName, chunkCount, len(audioChunk))
+
+			// Connect to WhisperLiveKit only when we have audio data
+			if err := as.connectToWhisperIfNeeded(); err != nil {
+				log.Printf("[%s] sendAudioToWhisper: Failed to connect to WhisperLiveKit for chunk #%d: %v", as.streamName, chunkCount, err)
+				continue
+			}
 
 			// Skip if no connection
 			if as.conn == nil {
@@ -468,9 +511,15 @@ func (as *AudioStreamer) receiveTranscriptions() error {
 			// Check for special server messages
 			var response map[string]interface{}
 			if err := json.Unmarshal(message, &response); err == nil {
-				if msgType, ok := response["type"].(string); ok && msgType == "ready_to_stop" {
-					log.Printf("[%s] Received ready_to_stop signal from WhisperLiveKit", as.streamName)
-					return nil // Exit gracefully
+				if msgType, ok := response["type"].(string); ok {
+					switch msgType {
+					case "ready_to_stop":
+						log.Printf("[%s] Received ready_to_stop signal from WhisperLiveKit", as.streamName)
+						return nil // Exit gracefully - this signals done
+					case "done":
+						log.Printf("[%s] Received done signal from WhisperLiveKit", as.streamName)
+						return nil // Exit gracefully - this signals done
+					}
 				}
 			}
 
@@ -503,10 +552,14 @@ func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 				log.Printf("Transcription error: %v, restarting in %v...", err, as.restartDelay)
 				as.transcriptErrors++
 
-				// Close current connection and reconnect
+				// Close current connection
+				as.connMutex.Lock()
 				if as.conn != nil {
 					as.conn.Close()
+					as.conn = nil
 				}
+				as.isConnected = false
+				as.connMutex.Unlock()
 
 				time.Sleep(as.restartDelay)
 
@@ -516,15 +569,20 @@ func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 					continue
 				}
 
+				as.connMutex.Lock()
+				as.isConnected = true
+				as.connMutex.Unlock()
+
 				// Reset error count on successful reconnection
 				as.transcriptErrors = 0
 				log.Printf("Successfully reconnected to WhisperLiveKit")
 				continue
 			}
 
-			// If receiveTranscriptions returns without error, it means it exited cleanly
-			log.Printf("Transcription service exited cleanly, restarting...")
-			time.Sleep(as.restartDelay)
+			// If receiveTranscriptions returns without error, it means it received a done signal
+			log.Printf("Received done signal from WhisperLiveKit, disconnecting...")
+			as.disconnectFromWhisper()
+			return
 		}
 	}
 }
@@ -532,8 +590,8 @@ func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 func (as *AudioStreamer) Stop() {
 	log.Printf("Stopping audio streamer for stream: %s", as.streamName)
 
-	// Send stop signal before closing
-	as.sendStopSignal()
+	// Disconnect from WhisperLiveKit gracefully
+	as.disconnectFromWhisper()
 
 	as.cancel()
 
@@ -545,12 +603,6 @@ func (as *AudioStreamer) Stop() {
 	if as.ffmpegStdout != nil {
 		as.ffmpegStdout.Close()
 		as.ffmpegStdout = nil
-	}
-
-	if as.conn != nil {
-		// Give a moment for the stop signal to be sent
-		time.Sleep(100 * time.Millisecond)
-		as.conn.Close()
 	}
 }
 
