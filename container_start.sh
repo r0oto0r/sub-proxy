@@ -4,7 +4,7 @@ set -e
 
 echo "Starting sub-proxy container..."
 
-python3 -c "from huggingface_hub.commands.user import _login; _login(token='$HUGGINGFACE_TOKEN')"
+echo "$HUGGINGFACE_TOKEN" | huggingface-cli login --token
 
 echo "Starting WhisperLiveKit server in background..."
 whisperlivekit-server \
