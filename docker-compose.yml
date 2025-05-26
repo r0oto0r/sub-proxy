@@ -14,3 +14,10 @@ services:
       - ./cache:/root/.cache/
     runtime: nvidia
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
