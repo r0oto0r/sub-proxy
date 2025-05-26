@@ -241,6 +241,7 @@ func (as *AudioStreamer) disconnectFromWhisper() {
 		as.conn = nil
 	}
 	as.isConnected = false
+	log.Printf("[%s] Disconnected from WhisperLiveKit", as.streamName)
 }
 
 func (as *AudioStreamer) connectToWhisper() error {
@@ -263,8 +264,6 @@ func (as *AudioStreamer) connectToWhisper() error {
 
 	log.Printf("Connected to WhisperLiveKit WebSocket")
 
-	// Send initial configuration if needed
-	// WhisperLiveKit might expect certain initialization parameters
 	return nil
 }
 
