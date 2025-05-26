@@ -8,11 +8,12 @@ huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 echo "Starting WhisperLiveKit server in background..."
 whisperlivekit-server \
-	--model large-v3 \
+	--model NbAiLab/whisper-large-v2-nob \
 	--host 0.0.0.0 \
 	--port 8000 \
 	--language de \
 	--task translate \
+	--backend whisper_timestamped \
 	--vac \
 	-l DEBUG \
 	--buffer_trimming segment 2>&1 | \
