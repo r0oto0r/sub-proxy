@@ -12,5 +12,6 @@ services:
       - YOUTUBE_CID=
     volumes:
       - ./models:/root/.cache/whisper
+      - ./transformers:/root/.cache/huggingface
     runtime: nvidia
     restart: unless-stopped
