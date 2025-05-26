@@ -15,7 +15,7 @@ whisperlivekit-server \
 	--task transcribe \
 	--vac \
 	--diarization \
-	--backend whisper-timestamped \
+	--backend whisper_timestamped \
 	--confidence-validation \
 	--buffer_trimming sentence 2>&1 | \
 	while IFS= read -r line; do
