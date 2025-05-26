@@ -469,10 +469,8 @@ func (as *AudioStreamer) sendStopSignal() {
 // sendStartMessage sends the START message to initialize transcription session
 func (as *AudioStreamer) sendStartMessage() error {
 	startMessage := map[string]interface{}{
-		"uid":      as.uid,
-		"message":  "START",
-		"language": "auto", // Let WhisperLiveKit auto-detect language
-		"task":     "transcribe",
+		"uid":     as.uid,
+		"message": "START",
 	}
 
 	messageBytes, err := json.Marshal(startMessage)
