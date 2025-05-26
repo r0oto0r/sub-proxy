@@ -10,5 +10,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - HUGGINGFACE_TOKEN=TOKEN
       - YOUTUBE_CID=
+    volumes:
+      - ./models:/root/.cache/whisper
     runtime: nvidia
     restart: unless-stopped
