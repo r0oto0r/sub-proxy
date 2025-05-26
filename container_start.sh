@@ -13,7 +13,7 @@ whisperlivekit-server \
 	--port 8000 \
 	--language de \
 	--task transcribe \
-	-- vac \
+	--vac \
 	--diarization \
 	--backend whisper-timestamped \
 	--confidence-validation \
