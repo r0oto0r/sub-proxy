@@ -14,7 +14,6 @@ whisperlivekit-server \
 	--language de \
 	--task translate \
 	--diarization \
-	--backend whisper \
 	--confidence-validation \
 	--buffer_trimming sentence 2>&1 | \
 	while IFS= read -r line; do
