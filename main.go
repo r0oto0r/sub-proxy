@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -174,8 +173,6 @@ type AudioStreamer struct {
 	restartDelay       time.Duration
 	isConnected        bool
 	connMutex          sync.Mutex
-	uid                string // Unique user ID for WhisperLiveKit session
-	sessionStarted     bool   // Track if session has been started
 }
 
 func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProcessor) *AudioStreamer {
@@ -188,15 +185,13 @@ func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProces
 		ctx:                ctx,
 		cancel:             cancel,
 		audioBuffer:        make(chan []byte, 100),
-		chunkSize:          1024,  // 1KB chunks for PCM audio
+		chunkSize:          4096,  // 4KB chunks for WebM
 		sampleRate:         16000, // 16kHz for Whisper
 		ffmpegRestartCount: 0,
 		transcriptErrors:   0,
 		maxRestarts:        10, // Maximum restarts before giving up
 		restartDelay:       2 * time.Second,
 		isConnected:        false,
-		uid:                fmt.Sprintf("stream_%s_%d", streamName, time.Now().Unix()), // Generate unique UID
-		sessionStarted:     false,
 	}
 }
 
@@ -228,22 +223,7 @@ func (as *AudioStreamer) connectToWhisperIfNeeded() error {
 	}
 
 	as.isConnected = true
-
-	// Send START message to initiate transcription session
-	if err := as.sendStartMessage(); err != nil {
-		log.Printf("[%s] Failed to send START message: %v", as.streamName, err)
-		as.conn.Close()
-		as.conn = nil
-		as.isConnected = false
-		return fmt.Errorf("failed to start transcription session: %v", err)
-	}
-
-	as.sessionStarted = true
-
-	// Start connection health monitoring
-	go as.monitorConnection()
-
-	// Start receiving transcriptions once connected and session started
+	// Start receiving transcriptions once connected
 	go as.receiveTranscriptionsWithRetry()
 	log.Printf("[%s] Successfully connected to WhisperLiveKit and started transcription service", as.streamName)
 	return nil
@@ -261,18 +241,16 @@ func (as *AudioStreamer) disconnectFromWhisper() {
 		as.conn = nil
 	}
 	as.isConnected = false
-	as.sessionStarted = false
 	log.Printf("[%s] Disconnected from WhisperLiveKit", as.streamName)
 }
 
 func (as *AudioStreamer) connectToWhisper() error {
 	u := url.URL{Scheme: "ws", Host: as.whisperURL, Path: "/asr"}
-	log.Printf("[%s] Connecting to WhisperLiveKit at %s", as.streamName, u.String())
+	log.Printf("Connecting to WhisperLiveKit at %s", u.String())
 
 	// Set headers for WhisperLiveKit compatibility
 	headers := make(map[string][]string)
 	headers["User-Agent"] = []string{"SubProxy-AudioStreamer/1.0"}
-	headers["Origin"] = []string{"http://localhost"}
 
 	// Create dialer with proper configuration
 	dialer := websocket.DefaultDialer
@@ -281,27 +259,11 @@ func (as *AudioStreamer) connectToWhisper() error {
 	var err error
 	as.conn, _, err = dialer.Dial(u.String(), headers)
 	if err != nil {
-		return fmt.Errorf("failed to connect to WebSocket: %v", err)
+		return err
 	}
 
-	// Set read/write deadlines to detect connection issues
-	as.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	as.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	log.Printf("Connected to WhisperLiveKit WebSocket")
 
-	// Set close handler
-	as.conn.SetCloseHandler(func(code int, text string) error {
-		log.Printf("[%s] WebSocket connection closed: code=%d, text=%s", as.streamName, code, text)
-		return nil
-	})
-
-	// Set pong handler to handle ping/pong for connection health
-	as.conn.SetPongHandler(func(appData string) error {
-		log.Printf("[%s] Received pong: %s", as.streamName, appData)
-		as.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		return nil
-	})
-
-	log.Printf("[%s] Connected to WhisperLiveKit WebSocket successfully", as.streamName)
 	return nil
 }
 
@@ -326,15 +288,16 @@ func (as *AudioStreamer) startFFmpeg() error {
 
 	log.Printf("[%s] startFFmpeg: Starting FFmpeg with RTMP URL: %s", as.streamName, rtmpURL)
 
-	// FFmpeg command to extract audio and convert to 16-bit PCM format for WhisperLiveKit
-	// WhisperLiveKit expects: 16-bit PCM, mono channel, 16kHz sample rate
+	// FFmpeg command to extract audio and convert to webm format for WhisperLiveKit
+	// Create short duration WebM chunks similar to MediaRecorder
 	args := []string{
 		"-i", rtmpURL,
-		"-vn",                  // No video
-		"-acodec", "pcm_s16le", // 16-bit PCM little endian (required by WhisperLiveKit)
-		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate (16kHz)
-		"-ac", "1", // Mono channel (required by WhisperLiveKit)
-		"-f", "wav", // WAV container format for raw PCM
+		"-vn",                // No video
+		"-acodec", "libopus", // Opus codec (preferred by WhisperLiveKit)
+		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate
+		"-ac", "1", // Mono
+		"-f", "webm", // WebM container format
+		"-dash", "1", // Enable DASH mode for better chunking
 		"-", // Output to stdout
 	}
 
@@ -445,71 +408,11 @@ func (as *AudioStreamer) sendStopSignal() {
 	as.connMutex.Lock()
 	defer as.connMutex.Unlock()
 
-	if as.conn != nil && as.sessionStarted {
-		// Send proper STOP message according to WhisperLiveKit protocol
-		log.Printf("[%s] Sending STOP signal to WhisperLiveKit", as.streamName)
-		stopMessage := map[string]interface{}{
-			"uid":     as.uid,
-			"message": "STOP",
-		}
-
-		messageBytes, err := json.Marshal(stopMessage)
-		if err != nil {
-			log.Printf("[%s] Error marshaling STOP message: %v", as.streamName, err)
-			return
-		}
-
-		if err := as.conn.WriteMessage(websocket.TextMessage, messageBytes); err != nil {
-			log.Printf("[%s] Error sending STOP signal: %v", as.streamName, err)
-		}
-		as.sessionStarted = false
-	}
-}
-
-// sendStartMessage sends the START message to initialize transcription session
-func (as *AudioStreamer) sendStartMessage() error {
-	startMessage := map[string]interface{}{
-		"uid":     as.uid,
-		"message": "START",
-	}
-
-	messageBytes, err := json.Marshal(startMessage)
-	if err != nil {
-		return fmt.Errorf("failed to marshal START message: %v", err)
-	}
-
-	log.Printf("[%s] Sending START message: %s", as.streamName, string(messageBytes))
-
-	if err := as.conn.WriteMessage(websocket.TextMessage, messageBytes); err != nil {
-		return fmt.Errorf("failed to send START message: %v", err)
-	}
-
-	log.Printf("[%s] START message sent successfully", as.streamName)
-	return nil
-}
-
-// monitorConnection sends periodic ping messages to keep connection alive
-func (as *AudioStreamer) monitorConnection() {
-	ticker := time.NewTicker(30 * time.Second) // Send ping every 30 seconds
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-as.ctx.Done():
-			return
-		case <-ticker.C:
-			as.connMutex.Lock()
-			if as.conn != nil && as.isConnected {
-				// Send ping message
-				if err := as.conn.WriteMessage(websocket.PingMessage, []byte("ping")); err != nil {
-					log.Printf("[%s] Failed to send ping: %v", as.streamName, err)
-					// Don't close connection here, let the read error handler deal with it
-				} else {
-					// Reset write deadline after successful ping
-					as.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				}
-			}
-			as.connMutex.Unlock()
+	if as.conn != nil {
+		// Send empty message as stop signal (like the browser client does)
+		log.Printf("[%s] Sending stop signal to WhisperLiveKit", as.streamName)
+		if err := as.conn.WriteMessage(websocket.BinaryMessage, []byte{}); err != nil {
+			log.Printf("[%s] Error sending stop signal: %v", as.streamName, err)
 		}
 	}
 }
@@ -517,11 +420,9 @@ func (as *AudioStreamer) monitorConnection() {
 func (as *AudioStreamer) readAudioFromFFmpeg() {
 	defer close(as.audioBuffer)
 
-	// Use smaller buffer for PCM audio chunks (1KB for more frequent updates)
-	buffer := make([]byte, 1024) // 1KB buffer for PCM audio
+	// Use larger buffer for WebM chunks
+	buffer := make([]byte, 16384) // 16KB buffer for WebM chunks
 	chunkCount := 0
-	skipWavHeader := true
-	headerSkipped := 0
 
 	log.Printf("[%s] readAudioFromFFmpeg: Starting to read audio from FFmpeg", as.streamName)
 
@@ -562,42 +463,24 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 			}
 
 			if n > 0 {
-				// Skip WAV header (44 bytes) for the first chunk
-				dataStart := 0
-				if skipWavHeader && headerSkipped < 44 {
-					bytesToSkip := 44 - headerSkipped
-					if bytesToSkip > n {
-						headerSkipped += n
-						continue // Skip this entire chunk, still in header
-					}
-					headerSkipped += bytesToSkip
-					dataStart = bytesToSkip
-					skipWavHeader = false
-					log.Printf("[%s] readAudioFromFFmpeg: Skipped WAV header (%d bytes)", as.streamName, headerSkipped)
-				}
+				chunkCount++
+				// log.Printf("[%s] readAudioFromFFmpeg: Read audio chunk #%d with %d bytes from FFmpeg", as.streamName, chunkCount, n)
 
-				// Only process if we have audio data after header
-				if dataStart < n {
-					chunkCount++
-					audioData := buffer[dataStart:n]
-					// log.Printf("[%s] readAudioFromFFmpeg: Read audio chunk #%d with %d bytes from FFmpeg", as.streamName, chunkCount, len(audioData))
+				// Send audio chunk to buffer
+				chunk := make([]byte, n)
+				copy(chunk, buffer[:n])
 
-					// Send audio chunk to buffer
-					chunk := make([]byte, len(audioData))
-					copy(chunk, audioData)
-
-					select {
-					case as.audioBuffer <- chunk:
-						// log.Printf("[%s] readAudioFromFFmpeg: Successfully buffered audio chunk #%d", as.streamName, chunkCount)
-					case <-as.ctx.Done():
-						// Send stop signal before exiting
-						log.Printf("[%s] readAudioFromFFmpeg: Context cancelled while buffering, sending stop signal", as.streamName)
-						go as.sendStopSignal()
-						return
-					default:
-						// Buffer full, skip this chunk
-						log.Printf("[%s] readAudioFromFFmpeg: Audio buffer full, skipping chunk #%d", as.streamName, chunkCount)
-					}
+				select {
+				case as.audioBuffer <- chunk:
+					// log.Printf("[%s] readAudioFromFFmpeg: Successfully buffered audio chunk #%d", as.streamName, chunkCount)
+				case <-as.ctx.Done():
+					// Send stop signal before exiting
+					log.Printf("[%s] readAudioFromFFmpeg: Context cancelled while buffering, sending stop signal", as.streamName)
+					go as.sendStopSignal()
+					return
+				default:
+					// Buffer full, skip this chunk
+					log.Printf("[%s] readAudioFromFFmpeg: Audio buffer full, skipping chunk #%d", as.streamName, chunkCount)
 				}
 			}
 		}
@@ -630,36 +513,15 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 				continue
 			}
 
-			// Skip if no connection or session not started
-			if as.conn == nil || !as.sessionStarted {
-				log.Printf("[%s] sendAudioToWhisper: No WhisperLiveKit connection or session not started, skipping audio chunk #%d", as.streamName, chunkCount)
+			// Skip if no connection
+			if as.conn == nil {
+				log.Printf("[%s] sendAudioToWhisper: No WhisperLiveKit connection, skipping audio chunk #%d", as.streamName, chunkCount)
 				continue
 			}
 
-			// Encode audio data as base64 and send as JSON message per WhisperLiveKit protocol
-			audioBase64 := base64.StdEncoding.EncodeToString(audioChunk)
-			audioMessage := map[string]interface{}{
-				"uid":        as.uid,
-				"audio_data": audioBase64,
-			}
-
-			messageBytes, err := json.Marshal(audioMessage)
-			if err != nil {
-				log.Printf("[%s] sendAudioToWhisper: Error marshaling audio message for chunk #%d: %v", as.streamName, chunkCount, err)
-				continue
-			}
-
-			// Send JSON message to WhisperLiveKit
-			// log.Printf("[%s] sendAudioToWhisper: Sending audio chunk #%d (%d bytes, %d base64 chars) to WhisperLiveKit", as.streamName, chunkCount, len(audioChunk), len(audioBase64))
-
-			// Reset write deadline before sending
-			as.connMutex.Lock()
-			if as.conn != nil {
-				as.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			}
-			as.connMutex.Unlock()
-
-			if err := as.conn.WriteMessage(websocket.TextMessage, messageBytes); err != nil {
+			// Send raw audio bytes to WhisperLiveKit
+			// log.Printf("[%s] sendAudioToWhisper: Sending audio chunk #%d (%d bytes) to WhisperLiveKit", as.streamName, chunkCount, len(audioChunk))
+			if err := as.conn.WriteMessage(websocket.BinaryMessage, audioChunk); err != nil {
 				log.Printf("[%s] sendAudioToWhisper: Error sending audio chunk #%d to WhisperLiveKit: %v", as.streamName, chunkCount, err)
 				// Don't return here, let the connection retry logic handle it
 				continue
@@ -675,79 +537,41 @@ func (as *AudioStreamer) receiveTranscriptions() error {
 		case <-as.ctx.Done():
 			return nil
 		default:
-			messageType, message, err := as.conn.ReadMessage()
+			_, message, err := as.conn.ReadMessage()
 			if err != nil {
 				return fmt.Errorf("error reading from WhisperLiveKit: %v", err)
 			}
 
-			// Handle different message types
-			switch messageType {
-			case websocket.TextMessage:
-				// Process JSON text messages (transcription responses)
-				transcript := string(message)
+			// Process the transcription response (JSON format)
+			transcript := string(message)
 
-				// Log the raw message for debugging
-				log.Printf("[%s] Raw WebSocket message: %s", as.streamName, transcript)
+			// Log the raw message for debugging
+			log.Printf("[%s] Raw WebSocket message: %s", as.streamName, transcript)
 
-				// Check for special server messages
-				var response map[string]interface{}
-				if err := json.Unmarshal(message, &response); err == nil {
-					// Check for status messages
-					if status, ok := response["status"].(string); ok {
-						switch status {
-						case "ERROR":
-							if errMsg, ok := response["message"].(string); ok {
-								log.Printf("[%s] WhisperLiveKit error: %s", as.streamName, errMsg)
-							}
-							continue
-						}
-					}
-
-					// Check for message type
-					if msgType, ok := response["type"].(string); ok {
-						switch msgType {
-						case "ready_to_stop":
-							log.Printf("[%s] Received ready_to_stop signal from WhisperLiveKit", as.streamName)
-							return nil // Exit gracefully - this signals done
-						case "done":
-							log.Printf("[%s] Received done signal from WhisperLiveKit", as.streamName)
-							return nil // Exit gracefully - this signals done
-						case "error":
-							if errMsg, ok := response["message"].(string); ok {
-								log.Printf("[%s] WhisperLiveKit error: %s", as.streamName, errMsg)
-							}
-							continue
-						}
-					}
-
-					// Check for UID mismatch
-					if responseUID, ok := response["uid"].(string); ok && responseUID != as.uid {
-						log.Printf("[%s] Warning: Received message for different UID: %s (expected: %s)", as.streamName, responseUID, as.uid)
-						continue
+			// Check for special server messages
+			var response map[string]interface{}
+			if err := json.Unmarshal(message, &response); err == nil {
+				if msgType, ok := response["type"].(string); ok {
+					switch msgType {
+					case "ready_to_stop":
+						log.Printf("[%s] Received ready_to_stop signal from WhisperLiveKit", as.streamName)
+						return nil // Exit gracefully - this signals done
+					case "done":
+						log.Printf("[%s] Received done signal from WhisperLiveKit", as.streamName)
+						return nil // Exit gracefully - this signals done
 					}
 				}
-
-				// Process transcript in a separate goroutine to avoid blocking
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("Panic in transcript processing: %v", r)
-						}
-					}()
-					as.processor.ProcessTranscript(transcript, as.streamName)
-				}()
-
-			case websocket.BinaryMessage:
-				// Handle binary messages if needed (shouldn't happen with WhisperLiveKit)
-				log.Printf("[%s] Received unexpected binary message (%d bytes)", as.streamName, len(message))
-
-			case websocket.CloseMessage:
-				log.Printf("[%s] Received close message from WhisperLiveKit", as.streamName)
-				return nil
-
-			default:
-				log.Printf("[%s] Received unknown message type: %d", as.streamName, messageType)
 			}
+
+			// Process transcript in a separate goroutine to avoid blocking
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("Panic in transcript processing: %v", r)
+					}
+				}()
+				as.processor.ProcessTranscript(transcript, as.streamName)
+			}()
 		}
 	}
 }
@@ -775,7 +599,6 @@ func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 					as.conn = nil
 				}
 				as.isConnected = false
-				as.sessionStarted = false
 				as.connMutex.Unlock()
 
 				time.Sleep(as.restartDelay)
@@ -786,20 +609,13 @@ func (as *AudioStreamer) receiveTranscriptionsWithRetry() {
 					continue
 				}
 
-				// Send START message to restart session
-				if err := as.sendStartMessage(); err != nil {
-					log.Printf("Failed to send START message after reconnection: %v", err)
-					continue
-				}
-
 				as.connMutex.Lock()
 				as.isConnected = true
-				as.sessionStarted = true
 				as.connMutex.Unlock()
 
 				// Reset error count on successful reconnection
 				as.transcriptErrors = 0
-				log.Printf("Successfully reconnected to WhisperLiveKit and restarted session")
+				log.Printf("Successfully reconnected to WhisperLiveKit")
 				continue
 			}
 
