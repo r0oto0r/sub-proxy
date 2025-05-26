@@ -431,7 +431,7 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 		select {
 		case <-as.ctx.Done():
 			// Send stop signal to WhisperLiveKit before closing
-			log.Printf("[%s] readAudioFromFFmpeg: Context cancelled, sending stop signal", as.streamName)
+			// log.Printf("[%s] readAudioFromFFmpeg: Context cancelled, sending stop signal", as.streamName)
 			go as.sendStopSignal()
 			return
 		default:
@@ -465,7 +465,7 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 
 			if n > 0 {
 				chunkCount++
-				log.Printf("[%s] readAudioFromFFmpeg: Read audio chunk #%d with %d bytes from FFmpeg", as.streamName, chunkCount, n)
+				// log.Printf("[%s] readAudioFromFFmpeg: Read audio chunk #%d with %d bytes from FFmpeg", as.streamName, chunkCount, n)
 
 				// Send audio chunk to buffer
 				chunk := make([]byte, n)
@@ -473,7 +473,7 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 
 				select {
 				case as.audioBuffer <- chunk:
-					log.Printf("[%s] readAudioFromFFmpeg: Successfully buffered audio chunk #%d", as.streamName, chunkCount)
+					// log.Printf("[%s] readAudioFromFFmpeg: Successfully buffered audio chunk #%d", as.streamName, chunkCount)
 				case <-as.ctx.Done():
 					// Send stop signal before exiting
 					log.Printf("[%s] readAudioFromFFmpeg: Context cancelled while buffering, sending stop signal", as.streamName)
@@ -506,7 +506,7 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 			}
 
 			chunkCount++
-			log.Printf("[%s] sendAudioToWhisper: Received audio chunk #%d with %d bytes from buffer", as.streamName, chunkCount, len(audioChunk))
+			// log.Printf("[%s] sendAudioToWhisper: Received audio chunk #%d with %d bytes from buffer", as.streamName, chunkCount, len(audioChunk))
 
 			// Connect to WhisperLiveKit only when we have audio data
 			if err := as.connectToWhisperIfNeeded(); err != nil {
@@ -521,13 +521,13 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 			}
 
 			// Send raw audio bytes to WhisperLiveKit
-			log.Printf("[%s] sendAudioToWhisper: Sending audio chunk #%d (%d bytes) to WhisperLiveKit", as.streamName, chunkCount, len(audioChunk))
+			// log.Printf("[%s] sendAudioToWhisper: Sending audio chunk #%d (%d bytes) to WhisperLiveKit", as.streamName, chunkCount, len(audioChunk))
 			if err := as.conn.WriteMessage(websocket.BinaryMessage, audioChunk); err != nil {
 				log.Printf("[%s] sendAudioToWhisper: Error sending audio chunk #%d to WhisperLiveKit: %v", as.streamName, chunkCount, err)
 				// Don't return here, let the connection retry logic handle it
 				continue
 			}
-			log.Printf("[%s] sendAudioToWhisper: Successfully sent audio chunk #%d to WhisperLiveKit", as.streamName, chunkCount)
+			// log.Printf("[%s] sendAudioToWhisper: Successfully sent audio chunk #%d to WhisperLiveKit", as.streamName, chunkCount)
 		}
 	}
 }
