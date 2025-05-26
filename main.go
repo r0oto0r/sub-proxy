@@ -75,6 +75,35 @@ func (sm *StreamManager) StopStream(streamName string) error {
 }
 
 // HTTP handlers
+func (sm *StreamManager) waitForWhisperLiveKit() error {
+	whisperURL := "http://0.0.0.0:8000"
+	timeout := 300 * time.Second // Wait up to 300 seconds
+	interval := 1 * time.Second
+	start := time.Now()
+
+	log.Printf("Waiting for WhisperLiveKit to become available at %s...", whisperURL)
+
+	for time.Since(start) < timeout {
+		client := &http.Client{
+			Timeout: 2 * time.Second,
+		}
+
+		resp, err := client.Get(whisperURL)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+				log.Printf("WhisperLiveKit is now available at %s", whisperURL)
+				return nil
+			}
+		}
+
+		log.Printf("WhisperLiveKit not yet available, retrying in %v...", interval)
+		time.Sleep(interval)
+	}
+
+	return fmt.Errorf("WhisperLiveKit did not become available within %v", timeout)
+}
+
 func (sm *StreamManager) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -84,6 +113,13 @@ func (sm *StreamManager) handlePublish(w http.ResponseWriter, r *http.Request) {
 	streamName := r.FormValue("name")
 	if streamName == "" {
 		http.Error(w, "Missing stream name", http.StatusBadRequest)
+		return
+	}
+
+	// Wait for WhisperLiveKit to become available before allowing publish
+	if err := sm.waitForWhisperLiveKit(); err != nil {
+		log.Printf("WhisperLiveKit not available for stream %s: %v", streamName, err)
+		http.Error(w, "Transcription service not available", http.StatusServiceUnavailable)
 		return
 	}
 
