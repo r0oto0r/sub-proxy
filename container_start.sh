@@ -12,7 +12,7 @@ whisperlivekit-server \
 	--host 0.0.0.0 \
 	--port 8000 \
 	--language de \
-	--task transcribe \
+	--task translate \
 	--diarization \
 	--backend whisper_timestamped \
 	--confidence-validation \
