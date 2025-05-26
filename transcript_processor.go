@@ -308,13 +308,14 @@ func (tp *TranscriptProcessor) postCaptionAndSync(text, streamName string) error
 	q.Set("lang", "en-US")
 	u.RawQuery = q.Encode()
 
-	// Create HTTP request
-	req, err := http.NewRequest("POST", u.String(), bytes.NewBufferString(body))
+	// Create HTTP request with UTF-8 encoded body
+	bodyBytes := []byte(body) // Explicitly convert to UTF-8 bytes
+	req, err := http.NewRequest("POST", u.String(), bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
-	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
 
 	// Send request
 	client := &http.Client{Timeout: 10 * time.Second}
