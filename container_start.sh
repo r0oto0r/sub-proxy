@@ -12,7 +12,7 @@ whisperlivekit-server \
 	--host 0.0.0.0 \
 	--port 8000 \
 	--language de \
-	--task translate \
+	--task transcribe \
 	--vac \
 	--buffer_trimming segment 2>&1 | \
 	while IFS= read -r line; do
