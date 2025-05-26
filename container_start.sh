@@ -12,7 +12,8 @@ whisperlivekit-server \
 	--host 0.0.0.0 \
 	--port 8000 \
 	--language de \
-	--task translate 2>&1 | \
+	--task translate \
+	--buffer_trimming sentence 2>&1 | \
 	while IFS= read -r line; do
 		echo -e "\033[36m[WhisperLiveKit]\033[0m $line"
 	done &
