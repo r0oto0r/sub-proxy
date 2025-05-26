@@ -161,17 +161,6 @@ func (tp *TranscriptProcessor) ProcessTranscript(transcript string, streamName s
 			}
 		}
 	}
-
-	// TODO: Implement actual transcript processing logic
-	// This could include:
-	// - Storing transcripts in database
-	// - Sending to overlay system via WebSocket
-	// - Broadcasting to connected clients
-	// - Language processing/filtering
-	// - Subtitle generation and overlay
-	// - Real-time translation
-	// - Sentiment analysis
-	// - Keyword detection and alerts
 }
 
 func (tp *TranscriptProcessor) GetTranscripts(streamName string) []string {
@@ -280,6 +269,7 @@ func parseIsoTimestamp(ts string) (time.Time, error) {
 
 // postCaptionAndSync sends a caption to YouTube and syncs local clock with YouTube's response
 func (tp *TranscriptProcessor) postCaptionAndSync(text, streamName string) error {
+	return nil
 	config := tp.youtubeConfigs[streamName]
 	if config == nil || !config.Enabled {
 		return fmt.Errorf("YouTube captions not configured for stream %s", streamName)
