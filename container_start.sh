@@ -8,12 +8,11 @@ huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 echo "Starting WhisperLiveKit server in background..."
 whisperlivekit-server \
-	--model small \
+	--model large-v3-turbo \
 	--host 0.0.0.0 \
 	--port 8000 \
 	--language de \
-	--task transcribe \
-	--vac \
+	--task translate \
 	--buffer_trimming segment 2>&1 | \
 	while IFS= read -r line; do
 		echo -e "\033[36m[WhisperLiveKit]\033[0m $line"
