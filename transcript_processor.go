@@ -324,25 +324,45 @@ func (tp *TranscriptProcessor) postCaptionAndSync(text, streamName string) error
 	}
 	defer resp.Body.Close()
 
-	// Read server response timestamp
-	serverTimestampRaw, err := io.ReadAll(resp.Body)
+	// Check HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		// Read response body for error details
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("YouTube API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Read server response
+	serverResponseRaw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %v", err)
 	}
 
-	serverTimestamp := strings.TrimSpace(string(serverTimestampRaw))
+	serverResponse := strings.TrimSpace(string(serverResponseRaw))
+
+	// Check if response contains an error message (more than just a timestamp)
+	// Split the response to separate timestamp from potential error message
+	responseParts := strings.SplitN(serverResponse, " ", 2)
+	serverTimestamp := responseParts[0]
+
+	// If there's more than just a timestamp, it's an error
+	if len(responseParts) > 1 {
+		errorMessage := responseParts[1]
+		log.Printf("[%s] YouTube caption error: %s", streamName, errorMessage)
+		// Don't update sequence number or delta on error, but don't kill processing
+		return fmt.Errorf("YouTube caption API error: %s", errorMessage)
+	}
 
 	// Calculate delta between local clock and YouTube's clock
 	localSent, err := parseIsoTimestamp(localTimestamp)
 	if err != nil {
 		log.Printf("[%s] Error parsing local timestamp: %v", streamName, err)
-		return nil
+		return fmt.Errorf("invalid local timestamp format: %v", err)
 	}
 
 	serverTime, err := parseIsoTimestamp(serverTimestamp)
 	if err != nil {
-		log.Printf("[%s] Error parsing server timestamp: %v", streamName, err)
-		return nil
+		log.Printf("[%s] Error parsing server timestamp '%s': %v", streamName, serverTimestamp, err)
+		return fmt.Errorf("invalid server timestamp format: %v", err)
 	}
 
 	config.ServerDeltaMs = serverTime.UnixMilli() - localSent.UnixMilli()
