@@ -21,13 +21,15 @@ import (
 
 // StreamManager manages active streams
 type StreamManager struct {
-	streams map[string]*AudioStreamer
-	mutex   sync.RWMutex
+	streams         map[string]*AudioStreamer
+	mutex           sync.RWMutex
+	globalProcessor *TranscriptProcessor // Shared processor for YouTube captions configuration
 }
 
 func NewStreamManager() *StreamManager {
 	return &StreamManager{
-		streams: make(map[string]*AudioStreamer),
+		streams:         make(map[string]*AudioStreamer),
+		globalProcessor: NewTranscriptProcessor(),
 	}
 }
 
@@ -40,11 +42,16 @@ func (sm *StreamManager) StartStream(streamName string) error {
 	}
 
 	whisperURL := "localhost:8000"
-	processor := NewTranscriptProcessor()
-	streamer := NewAudioStreamer(streamName, whisperURL, processor)
+	streamer := NewAudioStreamer(streamName, whisperURL, sm.globalProcessor)
 
 	if err := streamer.Start(); err != nil {
 		return fmt.Errorf("failed to start stream %s: %v", streamName, err)
+	}
+
+	// Auto-configure YouTube captions if CID is available from environment
+	if cid := os.Getenv("YOUTUBE_CID"); cid != "" {
+		sm.globalProcessor.ConfigureYouTubeCaptions(streamName, cid)
+		log.Printf("Auto-configured YouTube captions for stream %s with CID from env", streamName)
 	}
 
 	sm.streams[streamName] = streamer

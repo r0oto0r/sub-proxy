@@ -9,5 +9,6 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - HUGGINGFACE_TOKEN=TOKEN
+      - YOUTUBE_CID=
     runtime: nvidia
     restart: unless-stopped

@@ -1,9 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 )
 
 // WhisperResponse represents the JSON response from WhisperLiveKit
@@ -27,15 +35,28 @@ type Line struct {
 	End     string `json:"end,omitempty"`
 }
 
+// YouTubeCaptionConfig holds configuration for YouTube caption streaming
+type YouTubeCaptionConfig struct {
+	CID               string
+	Enabled           bool
+	ServerDeltaMs     int64
+	SequenceNumber    int
+	StreamDelayMs     int64 // 10 second delay for stream start
+	LastSentTimestamp time.Time
+	mu                sync.Mutex
+}
+
 // TranscriptProcessor handles transcription responses from WhisperLiveKit
 type TranscriptProcessor struct {
-	mu          sync.RWMutex
-	transcripts map[string][]WhisperResponse // streamName -> list of transcription responses
+	mu             sync.RWMutex
+	transcripts    map[string][]WhisperResponse     // streamName -> list of transcription responses
+	youtubeConfigs map[string]*YouTubeCaptionConfig // streamName -> YouTube caption config
 }
 
 func NewTranscriptProcessor() *TranscriptProcessor {
 	return &TranscriptProcessor{
-		transcripts: make(map[string][]WhisperResponse),
+		transcripts:    make(map[string][]WhisperResponse),
+		youtubeConfigs: make(map[string]*YouTubeCaptionConfig),
 	}
 }
 
@@ -109,16 +130,36 @@ func (tp *TranscriptProcessor) ProcessTranscript(transcript string, streamName s
 		}
 	}
 
-	// Log processed transcript content
+	// Log processed transcript content and send to YouTube if configured
 	if len(whisperResp.Lines) > 0 {
 		for _, line := range whisperResp.Lines {
 			if line.Text != "" {
 				log.Printf("[%s] Speaker %d: %s", streamName, line.Speaker, line.Text)
+
+				// Send to YouTube captions if configured
+				if config, exists := tp.youtubeConfigs[streamName]; exists && config.Enabled {
+					go func(text string) {
+						if err := tp.postCaptionAndSync(text, streamName); err != nil {
+							log.Printf("[%s] Failed to send caption to YouTube: %v", streamName, err)
+						}
+					}(line.Text)
+				}
 			}
 		}
 	}
 	if whisperResp.BufferTranscription != "" {
 		log.Printf("[%s] Buffer: %s", streamName, whisperResp.BufferTranscription)
+
+		// Send buffer transcription to YouTube if configured and no lines were sent
+		if len(whisperResp.Lines) == 0 {
+			if config, exists := tp.youtubeConfigs[streamName]; exists && config.Enabled {
+				go func(text string) {
+					if err := tp.postCaptionAndSync(text, streamName); err != nil {
+						log.Printf("[%s] Failed to send buffer caption to YouTube: %v", streamName, err)
+					}
+				}(whisperResp.BufferTranscription)
+			}
+		}
 	}
 
 	// TODO: Implement actual transcript processing logic
@@ -194,5 +235,122 @@ func (tp *TranscriptProcessor) ClearTranscripts(streamName string) {
 	defer tp.mu.Unlock()
 
 	delete(tp.transcripts, streamName)
-	log.Printf("Cleared transcripts for stream: %s", streamName)
+	delete(tp.youtubeConfigs, streamName)
+	log.Printf("Cleared transcripts and YouTube config for stream: %s", streamName)
+}
+
+// ConfigureYouTubeCaptions sets up YouTube caption streaming for a stream
+func (tp *TranscriptProcessor) ConfigureYouTubeCaptions(streamName, cid string) {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+
+	tp.youtubeConfigs[streamName] = &YouTubeCaptionConfig{
+		CID:               cid,
+		Enabled:           true,
+		ServerDeltaMs:     0,
+		SequenceNumber:    1,
+		StreamDelayMs:     10000, // 10 second stream delay
+		LastSentTimestamp: time.Now(),
+	}
+
+	log.Printf("[%s] YouTube captions configured with CID: %s", streamName, cid)
+}
+
+// getLocalIsoTimestamp formats current local time as ISO 8601 with milliseconds, adjusted for server delta and stream delay
+func (tp *TranscriptProcessor) getLocalIsoTimestamp(streamName string) string {
+	config := tp.youtubeConfigs[streamName]
+	if config == nil {
+		return time.Now().Format(time.RFC3339Nano)
+	}
+
+	// Adjust for server delta and stream delay
+	adjustedTime := time.Now().Add(time.Duration(config.ServerDeltaMs)*time.Millisecond + time.Duration(config.StreamDelayMs)*time.Millisecond)
+	return adjustedTime.Format(time.RFC3339Nano)
+}
+
+// parseIsoTimestamp parses ISO 8601 timestamp with milliseconds to time.Time
+func parseIsoTimestamp(ts string) (time.Time, error) {
+	// Try RFC3339Nano first (with nanoseconds)
+	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+		return t, nil
+	}
+	// Fallback to RFC3339 (with seconds)
+	return time.Parse(time.RFC3339, ts)
+}
+
+// postCaptionAndSync sends a caption to YouTube and syncs local clock with YouTube's response
+func (tp *TranscriptProcessor) postCaptionAndSync(text, streamName string) error {
+	config := tp.youtubeConfigs[streamName]
+	if config == nil || !config.Enabled {
+		return fmt.Errorf("YouTube captions not configured for stream %s", streamName)
+	}
+
+	config.mu.Lock()
+	defer config.mu.Unlock()
+
+	// Prevent sending captions too frequently (max once per second)
+	if time.Since(config.LastSentTimestamp) < time.Second {
+		return nil // Skip this caption
+	}
+
+	localTimestamp := tp.getLocalIsoTimestamp(streamName)
+	body := fmt.Sprintf("%s\n%s\n", localTimestamp, text)
+
+	// Build URL with parameters
+	u, err := url.Parse("http://upload.youtube.com/closedcaption")
+	if err != nil {
+		return fmt.Errorf("failed to parse YouTube URL: %v", err)
+	}
+
+	q := u.Query()
+	q.Set("cid", config.CID)
+	q.Set("seq", strconv.Itoa(config.SequenceNumber))
+	q.Set("lang", "en-US")
+	u.RawQuery = q.Encode()
+
+	// Create HTTP request
+	req, err := http.NewRequest("POST", u.String(), bytes.NewBufferString(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "text/plain")
+
+	// Send request
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send caption: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read server response timestamp
+	serverTimestampRaw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	serverTimestamp := strings.TrimSpace(string(serverTimestampRaw))
+
+	// Calculate delta between local clock and YouTube's clock
+	localSent, err := parseIsoTimestamp(localTimestamp)
+	if err != nil {
+		log.Printf("[%s] Error parsing local timestamp: %v", streamName, err)
+		return nil
+	}
+
+	serverTime, err := parseIsoTimestamp(serverTimestamp)
+	if err != nil {
+		log.Printf("[%s] Error parsing server timestamp: %v", streamName, err)
+		return nil
+	}
+
+	config.ServerDeltaMs = serverTime.UnixMilli() - localSent.UnixMilli()
+	config.SequenceNumber++
+	config.LastSentTimestamp = time.Now()
+
+	log.Printf("[%s] Caption sent - Local: %s, Server: %s, Delta: %dms, Seq: %d",
+		streamName, localTimestamp, serverTimestamp, config.ServerDeltaMs, config.SequenceNumber-1)
+
+	return nil
 }
