@@ -45,6 +45,7 @@ RUN pip install mosestokenizer wtpsplit
 RUN pip install diart
 RUN pip install whisperlivekit
 RUN pip install huggingface_hub
+RUN pip install whisperlivekit[whisper-timestamped]
 
 # Build nginx with RTMP module
 WORKDIR /tmp
