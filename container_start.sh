@@ -8,7 +8,7 @@ huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 echo "Starting WhisperLiveKit server in background..."
 whisperlivekit-server \
-	--model openai/whisper-large-v3-turbo \
+	--model turbo \
 	--host 0.0.0.0 \
 	--port 8000 \
 	--language de \
