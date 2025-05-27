@@ -185,7 +185,7 @@ func NewAudioStreamer(streamName, whisperURL string, processor *TranscriptProces
 		ctx:                ctx,
 		cancel:             cancel,
 		audioBuffer:        make(chan []byte, 100),
-		chunkSize:          4096,  // 4KB chunks for WebM
+		chunkSize:          32000, // 1 second of 16kHz mono 16-bit PCM = 16000 * 2 bytes * 1 sec = 32000 bytes
 		sampleRate:         16000, // 16kHz for Whisper
 		ffmpegRestartCount: 0,
 		transcriptErrors:   0,
@@ -288,16 +288,16 @@ func (as *AudioStreamer) startFFmpeg() error {
 
 	log.Printf("[%s] startFFmpeg: Starting FFmpeg with RTMP URL: %s", as.streamName, rtmpURL)
 
-	// FFmpeg command to extract audio and convert to webm format for WhisperLiveKit
-	// Create short duration WebM chunks similar to MediaRecorder
+	// FFmpeg command to extract audio and convert to PCM format with 1-second chunks for WhisperLiveKit
+	// Use PCM format for precise timing control
 	args := []string{
 		"-i", rtmpURL,
-		"-vn",                // No video
-		"-acodec", "libopus", // Opus codec (preferred by WhisperLiveKit)
-		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate
+		"-vn",                  // No video
+		"-acodec", "pcm_s16le", // PCM 16-bit little endian (WhisperLiveKit compatible)
+		"-ar", fmt.Sprintf("%d", as.sampleRate), // Sample rate (16kHz)
 		"-ac", "1", // Mono
-		"-f", "webm", // WebM container format
-		"-dash", "1", // Enable DASH mode for better chunking
+		"-f", "s16le", // Raw PCM format
+		"-flush_packets", "1", // Flush packets immediately for low latency
 		"-", // Output to stdout
 	}
 
@@ -420,17 +420,16 @@ func (as *AudioStreamer) sendStopSignal() {
 func (as *AudioStreamer) readAudioFromFFmpeg() {
 	defer close(as.audioBuffer)
 
-	// Use larger buffer for WebM chunks
-	buffer := make([]byte, 16384) // 16KB buffer for WebM chunks
+	// Use chunk size for exactly 1 second of audio (16kHz * 2 bytes * 1 sec = 32000 bytes)
+	buffer := make([]byte, as.chunkSize)
 	chunkCount := 0
 
-	log.Printf("[%s] readAudioFromFFmpeg: Starting to read audio from FFmpeg", as.streamName)
+	log.Printf("[%s] readAudioFromFFmpeg: Starting to read audio from FFmpeg with 1-second chunks (%d bytes)", as.streamName, as.chunkSize)
 
 	for {
 		select {
 		case <-as.ctx.Done():
 			// Send stop signal to WhisperLiveKit before closing
-			// log.Printf("[%s] readAudioFromFFmpeg: Context cancelled, sending stop signal", as.streamName)
 			go as.sendStopSignal()
 			return
 		default:
@@ -440,39 +439,45 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 				continue
 			}
 
-			n, err := as.ffmpegStdout.Read(buffer)
-			if err != nil {
-				if err != io.EOF {
-					// Check if this is a "file already closed" error or similar pipe closure
-					if strings.Contains(err.Error(), "file already closed") ||
-						strings.Contains(err.Error(), "broken pipe") ||
-						strings.Contains(err.Error(), "use of closed") {
-						log.Printf("[%s] readAudioFromFFmpeg: FFmpeg pipe closed, clearing stdout reference", as.streamName)
-						as.ffmpegStdout = nil
-						time.Sleep(100 * time.Millisecond)
-						continue
+			// Read exactly 1 second worth of audio data
+			totalRead := 0
+			for totalRead < as.chunkSize {
+				n, err := as.ffmpegStdout.Read(buffer[totalRead:])
+				if err != nil {
+					if err != io.EOF {
+						// Check if this is a "file already closed" error or similar pipe closure
+						if strings.Contains(err.Error(), "file already closed") ||
+							strings.Contains(err.Error(), "broken pipe") ||
+							strings.Contains(err.Error(), "use of closed") {
+							log.Printf("[%s] readAudioFromFFmpeg: FFmpeg pipe closed, clearing stdout reference", as.streamName)
+							as.ffmpegStdout = nil
+							time.Sleep(100 * time.Millisecond)
+							break
+						}
+						log.Printf("[%s] readAudioFromFFmpeg: Error reading from FFmpeg: %v", as.streamName, err)
+					} else {
+						log.Printf("[%s] readAudioFromFFmpeg: FFmpeg stdout EOF", as.streamName)
 					}
-					log.Printf("[%s] readAudioFromFFmpeg: Error reading from FFmpeg: %v", as.streamName, err)
-				} else {
-					log.Printf("[%s] readAudioFromFFmpeg: FFmpeg stdout EOF", as.streamName)
+					// Clear the stdout reference and wait for restart
+					as.ffmpegStdout = nil
+					time.Sleep(100 * time.Millisecond)
+					break
 				}
-				// Clear the stdout reference and wait for restart
-				as.ffmpegStdout = nil
-				time.Sleep(100 * time.Millisecond)
-				continue
+
+				totalRead += n
 			}
 
-			if n > 0 {
+			if totalRead == as.chunkSize {
 				chunkCount++
-				// log.Printf("[%s] readAudioFromFFmpeg: Read audio chunk #%d with %d bytes from FFmpeg", as.streamName, chunkCount, n)
+				log.Printf("[%s] readAudioFromFFmpeg: Read 1-second audio chunk #%d (%d bytes)", as.streamName, chunkCount, totalRead)
 
 				// Send audio chunk to buffer
-				chunk := make([]byte, n)
-				copy(chunk, buffer[:n])
+				chunk := make([]byte, totalRead)
+				copy(chunk, buffer[:totalRead])
 
 				select {
 				case as.audioBuffer <- chunk:
-					// log.Printf("[%s] readAudioFromFFmpeg: Successfully buffered audio chunk #%d", as.streamName, chunkCount)
+					// Successfully buffered 1-second chunk
 				case <-as.ctx.Done():
 					// Send stop signal before exiting
 					log.Printf("[%s] readAudioFromFFmpeg: Context cancelled while buffering, sending stop signal", as.streamName)
@@ -480,7 +485,7 @@ func (as *AudioStreamer) readAudioFromFFmpeg() {
 					return
 				default:
 					// Buffer full, skip this chunk
-					log.Printf("[%s] readAudioFromFFmpeg: Audio buffer full, skipping chunk #%d", as.streamName, chunkCount)
+					log.Printf("[%s] readAudioFromFFmpeg: Audio buffer full, skipping 1-second chunk #%d", as.streamName, chunkCount)
 				}
 			}
 		}
@@ -505,7 +510,7 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 			}
 
 			chunkCount++
-			// log.Printf("[%s] sendAudioToWhisper: Received audio chunk #%d with %d bytes from buffer", as.streamName, chunkCount, len(audioChunk))
+			log.Printf("[%s] sendAudioToWhisper: Sending 1-second audio chunk #%d (%d bytes) to WhisperLiveKit", as.streamName, chunkCount, len(audioChunk))
 
 			// Connect to WhisperLiveKit only when we have audio data
 			if err := as.connectToWhisperIfNeeded(); err != nil {
@@ -519,14 +524,13 @@ func (as *AudioStreamer) sendAudioToWhisper() {
 				continue
 			}
 
-			// Send raw audio bytes to WhisperLiveKit
-			// log.Printf("[%s] sendAudioToWhisper: Sending audio chunk #%d (%d bytes) to WhisperLiveKit", as.streamName, chunkCount, len(audioChunk))
+			// Send raw PCM audio bytes to WhisperLiveKit (1-second chunks)
 			if err := as.conn.WriteMessage(websocket.BinaryMessage, audioChunk); err != nil {
-				log.Printf("[%s] sendAudioToWhisper: Error sending audio chunk #%d to WhisperLiveKit: %v", as.streamName, chunkCount, err)
+				log.Printf("[%s] sendAudioToWhisper: Error sending 1-second audio chunk #%d to WhisperLiveKit: %v", as.streamName, chunkCount, err)
 				// Don't return here, let the connection retry logic handle it
 				continue
 			}
-			// log.Printf("[%s] sendAudioToWhisper: Successfully sent audio chunk #%d to WhisperLiveKit", as.streamName, chunkCount)
+			log.Printf("[%s] sendAudioToWhisper: Successfully sent 1-second audio chunk #%d to WhisperLiveKit", as.streamName, chunkCount)
 		}
 	}
 }

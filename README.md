@@ -60,8 +60,9 @@ Available models: `tiny.en`, `base.en`, `small.en`, `medium.en`, `large-v2`, `la
 The Go application is configured for:
 - Sample rate: 16kHz (required by Whisper)
 - Format: 16-bit PCM mono (required by WhisperLiveKit protocol)
-- Chunk size: 1KB
-- Protocol: JSON messages with base64-encoded audio data
+- Chunk size: 1 second (32,000 bytes = 16kHz * 2 bytes * 1 second)
+- Protocol: Raw binary PCM data sent via WebSocket
+- Timing: Precise 1-second audio segments for optimal transcription quality
 
 ## Extensibility
 
