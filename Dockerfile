@@ -40,7 +40,7 @@ RUN wget https://go.dev/dl/go1.22.2.linux-amd64.tar.gz \
 
 # install WhisperLiveKit
 RUN pip install --upgrade pip
-RUN pip remove nvidia-cudnn-cu12
+RUN pip uninstall nvidia-cudnn-cu12
 
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 RUN pip install mosestokenizer wtpsplit
